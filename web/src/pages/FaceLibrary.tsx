@@ -47,8 +47,10 @@ export default function FaceLibrary() {
     (file: File) => {
       const formData = new FormData();
       formData.append("file", file);
+      const faceName = pageToggle || "undefined";
+      
       axios
-        .post(`faces/${pageToggle}`, formData, {
+        .post(`${baseUrl}faces/${faceName}`, formData, {
           headers: {
             "Content-Type": "multipart/form-data",
           },
