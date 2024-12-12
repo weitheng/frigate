@@ -172,7 +172,7 @@ class Embeddings:
                     "facenet.onnx": "https://github.com/NickM-27/facenet-onnx/releases/download/v1.0/facenet.onnx"
                 },
                 model_size="large",
-                model_type=ModelTypeEnum.face_detect,
+                model_type=ModelTypeEnum.face,
                 requestor=self.requestor,
                 device="CPU",
             )
