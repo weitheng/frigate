@@ -18,6 +18,9 @@ router = APIRouter(tags=[Tags.events])
 
 @router.get("/faces")
 def get_faces():
+    # Create faces directory if it doesn't exist
+    os.makedirs(FACE_DIR, exist_ok=True)
+    
     face_dict: dict[str, list[str]] = {}
 
     for name in os.listdir(FACE_DIR):

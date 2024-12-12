@@ -74,7 +74,7 @@ class Embeddings:
             if config.semantic_search.model_size == "large"
             else "jinaai/jina-clip-v1-vision_model_quantized.onnx",
             "jinaai/jina-clip-v1-preprocessor_config.json",
-            "facenet-facenet.onnx",
+            "facenet-onnx-facenet.onnx",
             "paddleocr-onnx-detection.onnx",
             "paddleocr-onnx-classification.onnx",
             "paddleocr-onnx-recognition.onnx",
@@ -160,6 +160,19 @@ class Embeddings:
                 },
                 model_size="large",
                 model_type=ModelTypeEnum.lpr_recognize,
+                requestor=self.requestor,
+                device="CPU",
+            )
+
+        if self.config.face_recognition.enabled:
+            self.face_detection_model = GenericONNXEmbedding(
+                model_name="facenet-onnx",
+                model_file="facenet.onnx",
+                download_urls={
+                    "facenet.onnx": "https://github.com/NickM-27/facenet-onnx/releases/download/v1.0/facenet.onnx"
+                },
+                model_size="large",
+                model_type=ModelTypeEnum.face_detect,
                 requestor=self.requestor,
                 device="CPU",
             )
