@@ -29,6 +29,7 @@ from frigate.const import (
     FACE_DIR,
     FRIGATE_LOCALHOST,
     UPDATE_EVENT_DESCRIPTION,
+    MODEL_CACHE_DIR,
 )
 from frigate.embeddings.lpr.lpr import LicensePlateRecognition
 from frigate.events.types import EventTypeEnum
@@ -104,7 +105,7 @@ class EmbeddingMaintainer(threading.Thread):
         # Lazily create the classifier.
         if "face_detector" not in self.__dict__:
             self.__dict__["face_detector"] = cv2.FaceDetectorYN.create(
-                "/config/model_cache/facenet/facedet.onnx",
+                os.path.join(MODEL_CACHE_DIR, "facenet-onnx", "facenet.onnx"),
                 config="",
                 input_size=(320, 320),
                 score_threshold=0.8,

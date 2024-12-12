@@ -121,7 +121,7 @@ export default function FaceLibrary() {
           </div>
         </ScrollArea>
       </div>
-      {pageToggle && (
+      {pageToggle ? (
         <div className="flex flex-wrap gap-2">
           {faceImages.map((image: string) => (
             <FaceImage key={image} name={pageToggle} image={image} />
@@ -132,6 +132,14 @@ export default function FaceLibrary() {
             onClick={() => setUpload(true)}
           >
             <LuImagePlus className="size-10" />
+          </Button>
+        </div>
+      ) : (
+        <div className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center text-center gap-2">
+          <LuImagePlus className="size-16" />
+          <div>No faces registered</div>
+          <Button onClick={() => setUpload(true)}>
+            Upload Face Image
           </Button>
         </div>
       )}
