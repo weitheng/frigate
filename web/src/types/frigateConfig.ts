@@ -143,6 +143,7 @@ export interface CameraConfig {
     password: string | null;
     port: number;
     user: string | null;
+    tls_insecure: boolean;
   };
   record: {
     enabled: boolean;
