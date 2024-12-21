@@ -6,7 +6,7 @@ import queue
 import threading
 from collections import Counter, defaultdict
 from multiprocessing.synchronize import Event as MpEvent
-from typing import Callable
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -162,7 +162,12 @@ class CameraState:
                     box[2],
                     box[3],
                     text,
-                    f"{obj['score']:.0%} {int(obj['area'])}",
+                    f"{obj['score']:.0%} {int(obj['area'])}"
+                    + (
+                        f" {float(obj['estimated_speed']):.1f}"
+                        if obj["estimated_speed"] != 0
+                        else ""
+                    ),
                     thickness=thickness,
                     color=color,
                 )
@@ -233,16 +238,17 @@ class CameraState:
     def on(self, event_type: str, callback: Callable[[dict], None]):
         self.callbacks[event_type].append(callback)
 
-    def update(self, frame_time, current_detections, motion_boxes, regions):
-        # get the new frame
-        frame_id = f"{self.name}{frame_time}"
-
+    def update(
+        self,
+        frame_name: str,
+        frame_time: float,
+        current_detections: dict[str, dict[str, any]],
+        motion_boxes: list[tuple[int, int, int, int]],
+        regions: list[tuple[int, int, int, int]],
+    ):
         current_frame = self.frame_manager.get(
-            frame_id, self.camera_config.frame_shape_yuv
+            frame_name, self.camera_config.frame_shape_yuv
         )
-
-        if current_frame is None:
-            logger.debug(f"Failed to get frame {frame_id} from SHM")
 
         tracked_objects = self.tracked_objects.copy()
         current_ids = set(current_detections.keys())
@@ -255,13 +261,14 @@ class CameraState:
             new_obj = tracked_objects[id] = TrackedObject(
                 self.config.model,
                 self.camera_config,
+                self.config.ui,
                 self.frame_cache,
                 current_detections[id],
             )
 
             # call event handlers
             for c in self.callbacks["start"]:
-                c(self.name, new_obj, frame_time)
+                c(self.name, new_obj, frame_name)
 
         for id in updated_ids:
             updated_obj = tracked_objects[id]
@@ -271,7 +278,7 @@ class CameraState:
 
             if autotracker_update or significant_update:
                 for c in self.callbacks["autotrack"]:
-                    c(self.name, updated_obj, frame_time)
+                    c(self.name, updated_obj, frame_name)
 
             if thumb_update and current_frame is not None:
                 # ensure this frame is stored in the cache
@@ -292,7 +299,7 @@ class CameraState:
             ) or significant_update:
                 # call event handlers
                 for c in self.callbacks["update"]:
-                    c(self.name, updated_obj, frame_time)
+                    c(self.name, updated_obj, frame_name)
                 updated_obj.last_published = frame_time
 
         for id in removed_ids:
@@ -301,7 +308,7 @@ class CameraState:
             if "end_time" not in removed_obj.obj_data:
                 removed_obj.obj_data["end_time"] = frame_time
                 for c in self.callbacks["end"]:
-                    c(self.name, removed_obj, frame_time)
+                    c(self.name, removed_obj, frame_name)
 
         # TODO: can i switch to looking this up and only changing when an event ends?
         # maintain best objects
@@ -367,11 +374,11 @@ class CameraState:
                 ):
                     self.best_objects[object_type] = obj
                     for c in self.callbacks["snapshot"]:
-                        c(self.name, self.best_objects[object_type], frame_time)
+                        c(self.name, self.best_objects[object_type], frame_name)
             else:
                 self.best_objects[object_type] = obj
                 for c in self.callbacks["snapshot"]:
-                    c(self.name, self.best_objects[object_type], frame_time)
+                    c(self.name, self.best_objects[object_type], frame_name)
 
         for c in self.callbacks["camera_activity"]:
             c(self.name, camera_activity)
@@ -446,7 +453,7 @@ class CameraState:
                     c(self.name, obj_name, 0)
                 self.active_object_counts[obj_name] = 0
             for c in self.callbacks["snapshot"]:
-                c(self.name, self.best_objects[obj_name], frame_time)
+                c(self.name, self.best_objects[obj_name], frame_name)
 
         # cleanup thumbnail frame cache
         current_thumb_frames = {
@@ -477,7 +484,7 @@ class CameraState:
                 if self.previous_frame_id is not None:
                     self.frame_manager.close(self.previous_frame_id)
 
-            self.previous_frame_id = frame_id
+            self.previous_frame_id = frame_name
 
 
 class TrackedObjectProcessor(threading.Thread):
@@ -517,17 +524,18 @@ class TrackedObjectProcessor(threading.Thread):
         self.zone_data = defaultdict(lambda: defaultdict(dict))
         self.active_zone_data = defaultdict(lambda: defaultdict(dict))
 
-        def start(camera, obj: TrackedObject, current_frame_time):
+        def start(camera: str, obj: TrackedObject, frame_name: str):
             self.event_sender.publish(
                 (
                     EventTypeEnum.tracked_object,
                     EventStateEnum.start,
                     camera,
+                    frame_name,
                     obj.to_dict(),
                 )
             )
 
-        def update(camera, obj: TrackedObject, current_frame_time):
+        def update(camera: str, obj: TrackedObject, frame_name: str):
             obj.has_snapshot = self.should_save_snapshot(camera, obj)
             obj.has_clip = self.should_retain_recording(camera, obj)
             after = obj.to_dict()
@@ -543,14 +551,15 @@ class TrackedObjectProcessor(threading.Thread):
                     EventTypeEnum.tracked_object,
                     EventStateEnum.update,
                     camera,
+                    frame_name,
                     obj.to_dict(include_thumbnail=True),
                 )
             )
 
-        def autotrack(camera, obj: TrackedObject, current_frame_time):
+        def autotrack(camera: str, obj: TrackedObject, frame_name: str):
             self.ptz_autotracker_thread.ptz_autotracker.autotrack_object(camera, obj)
 
-        def end(camera, obj: TrackedObject, current_frame_time):
+        def end(camera: str, obj: TrackedObject, frame_name: str):
             # populate has_snapshot
             obj.has_snapshot = self.should_save_snapshot(camera, obj)
             obj.has_clip = self.should_retain_recording(camera, obj)
@@ -605,11 +614,12 @@ class TrackedObjectProcessor(threading.Thread):
                     EventTypeEnum.tracked_object,
                     EventStateEnum.end,
                     camera,
+                    frame_name,
                     obj.to_dict(include_thumbnail=True),
                 )
             )
 
-        def snapshot(camera, obj: TrackedObject, current_frame_time):
+        def snapshot(camera, obj: TrackedObject, frame_name: str):
             mqtt_config: MqttConfig = self.config.cameras[camera].mqtt
             if mqtt_config.enabled and self.should_mqtt_snapshot(camera, obj):
                 jpg_bytes = obj.get_jpg_bytes(
@@ -698,30 +708,7 @@ class TrackedObjectProcessor(threading.Thread):
             return False
 
         # If the object is not considered an alert or detection
-        review_config = self.config.cameras[camera].review
-        if not (
-            (
-                obj.obj_data["label"] in review_config.alerts.labels
-                and (
-                    not review_config.alerts.required_zones
-                    or set(obj.entered_zones) & set(review_config.alerts.required_zones)
-                )
-            )
-            or (
-                (
-                    not review_config.detections.labels
-                    or obj.obj_data["label"] in review_config.detections.labels
-                )
-                and (
-                    not review_config.detections.required_zones
-                    or set(obj.entered_zones)
-                    & set(review_config.detections.required_zones)
-                )
-            )
-        ):
-            logger.debug(
-                f"Not creating clip for {obj.obj_data['id']} because it did not qualify as an alert or detection"
-            )
+        if obj.max_severity is None:
             return False
 
         return True
@@ -780,12 +767,17 @@ class TrackedObjectProcessor(threading.Thread):
         else:
             return {}
 
-    def get_current_frame(self, camera, draw_options={}):
+    def get_current_frame(
+        self, camera: str, draw_options: dict[str, any] = {}
+    ) -> Optional[np.ndarray]:
         if camera == "birdseye":
             return self.frame_manager.get(
                 "birdseye",
                 (self.config.birdseye.height * 3 // 2, self.config.birdseye.width),
             )
+
+        if camera not in self.camera_states:
+            return None
 
         return self.camera_states[camera].get_current_frame(draw_options)
 
@@ -798,6 +790,7 @@ class TrackedObjectProcessor(threading.Thread):
             try:
                 (
                     camera,
+                    frame_name,
                     frame_time,
                     current_tracked_objects,
                     motion_boxes,
@@ -809,7 +802,7 @@ class TrackedObjectProcessor(threading.Thread):
             camera_state = self.camera_states[camera]
 
             camera_state.update(
-                frame_time, current_tracked_objects, motion_boxes, regions
+                frame_name, frame_time, current_tracked_objects, motion_boxes, regions
             )
 
             self.update_mqtt_motion(camera, frame_time, motion_boxes)
@@ -822,6 +815,7 @@ class TrackedObjectProcessor(threading.Thread):
             self.detection_publisher.publish(
                 (
                     camera,
+                    frame_name,
                     frame_time,
                     tracked_objects,
                     motion_boxes,

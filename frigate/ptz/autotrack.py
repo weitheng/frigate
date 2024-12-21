@@ -2,7 +2,6 @@
 
 import copy
 import logging
-import os
 import queue
 import threading
 import time
@@ -29,11 +28,11 @@ from frigate.const import (
     AUTOTRACKING_ZOOM_EDGE_THRESHOLD,
     AUTOTRACKING_ZOOM_IN_HYSTERESIS,
     AUTOTRACKING_ZOOM_OUT_HYSTERESIS,
-    CONFIG_DIR,
 )
 from frigate.ptz.onvif import OnvifController
 from frigate.track.tracked_object import TrackedObject
 from frigate.util.builtin import update_yaml_file
+from frigate.util.config import find_config_file
 from frigate.util.image import SharedMemoryFrameManager, intersection_over_union
 
 logger = logging.getLogger(__name__)
@@ -59,7 +58,13 @@ class PtzMotionEstimator:
         self.ptz_metrics.reset.set()
         logger.debug(f"{config.name}: Motion estimator init")
 
-    def motion_estimator(self, detections, frame_time, camera):
+    def motion_estimator(
+        self,
+        detections: list[dict[str, any]],
+        frame_name: str,
+        frame_time: float,
+        camera: str,
+    ):
         # If we've just started up or returned to our preset, reset motion estimator for new tracking session
         if self.ptz_metrics.reset.is_set():
             self.ptz_metrics.reset.clear()
@@ -92,9 +97,8 @@ class PtzMotionEstimator:
                 f"{camera}: Motion estimator running - frame time: {frame_time}"
             )
 
-            frame_id = f"{camera}{frame_time}"
             yuv_frame = self.frame_manager.get(
-                frame_id, self.camera_config.frame_shape_yuv
+                frame_name, self.camera_config.frame_shape_yuv
             )
 
             if yuv_frame is None:
@@ -136,7 +140,7 @@ class PtzMotionEstimator:
             except Exception:
                 pass
 
-            self.frame_manager.close(frame_id)
+            self.frame_manager.close(frame_name)
 
         return self.coord_transformations
 
@@ -323,13 +327,7 @@ class PtzAutoTracker:
         self.autotracker_init[camera] = True
 
     def _write_config(self, camera):
-        config_file = os.environ.get("CONFIG_FILE", f"{CONFIG_DIR}/config.yml")
-
-        # Check if we can use .yaml instead of .yml
-        config_file_yaml = config_file.replace(".yml", ".yaml")
-
-        if os.path.isfile(config_file_yaml):
-            config_file = config_file_yaml
+        config_file = find_config_file()
 
         logger.debug(
             f"{camera}: Writing new config with autotracker motion coefficients: {self.config.cameras[camera].onvif.autotracking.movement_weights}"

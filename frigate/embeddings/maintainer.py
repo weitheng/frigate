@@ -24,6 +24,7 @@ from frigate.const import CLIPS_DIR, UPDATE_EVENT_DESCRIPTION
 from frigate.events.types import EventTypeEnum
 from frigate.genai import get_genai_client
 from frigate.models import Event
+from frigate.types import TrackedObjectUpdateTypesEnum
 from frigate.util.builtin import serialize
 from frigate.util.image import SharedMemoryFrameManager, calculate_region
 
@@ -113,7 +114,7 @@ class EmbeddingMaintainer(threading.Thread):
         if update is None:
             return
 
-        source_type, _, camera, data = update
+        source_type, _, camera, frame_name, data = update
 
         if not camera or source_type != EventTypeEnum.tracked_object:
             return
@@ -133,8 +134,9 @@ class EmbeddingMaintainer(threading.Thread):
 
         # Create our own thumbnail based on the bounding box and the frame time
         try:
-            frame_id = f"{camera}{data['frame_time']}"
-            yuv_frame = self.frame_manager.get(frame_id, camera_config.frame_shape_yuv)
+            yuv_frame = self.frame_manager.get(
+                frame_name, camera_config.frame_shape_yuv
+            )
 
             if yuv_frame is not None:
                 data["thumbnail"] = self._create_thumbnail(yuv_frame, data["box"])
@@ -146,7 +148,7 @@ class EmbeddingMaintainer(threading.Thread):
 
                 self.tracked_events[data["id"]].append(data)
 
-                self.frame_manager.close(frame_id)
+                self.frame_manager.close(frame_name)
         except FileNotFoundError:
             pass
 
@@ -219,7 +221,10 @@ class EmbeddingMaintainer(threading.Thread):
                         [snapshot_image]
                         if event.has_snapshot and camera_config.genai.use_snapshot
                         else (
-                            [thumbnail for data in self.tracked_events[event_id]]
+                            [
+                                data["thumbnail"]
+                                for data in self.tracked_events[event_id]
+                            ]
                             if len(self.tracked_events.get(event_id, [])) > 0
                             else [thumbnail]
                         )
@@ -287,7 +292,11 @@ class EmbeddingMaintainer(threading.Thread):
         # fire and forget description update
         self.requestor.send_data(
             UPDATE_EVENT_DESCRIPTION,
-            {"id": event.id, "description": description},
+            {
+                "type": TrackedObjectUpdateTypesEnum.description,
+                "id": event.id,
+                "description": description,
+            },
         )
 
         # Embed the description
@@ -319,18 +328,25 @@ class EmbeddingMaintainer(threading.Thread):
         )
 
         if event.has_snapshot and source == "snapshot":
-            with open(
-                os.path.join(CLIPS_DIR, f"{event.camera}-{event.id}.jpg"),
-                "rb",
-            ) as image_file:
+            snapshot_file = os.path.join(CLIPS_DIR, f"{event.camera}-{event.id}.jpg")
+
+            if not os.path.isfile(snapshot_file):
+                logger.error(
+                    f"Cannot regenerate description for {event.id}, snapshot file not found: {snapshot_file}"
+                )
+                return
+
+            with open(snapshot_file, "rb") as image_file:
                 snapshot_image = image_file.read()
                 img = cv2.imdecode(
                     np.frombuffer(snapshot_image, dtype=np.int8), cv2.IMREAD_COLOR
                 )
 
                 # crop snapshot based on region before sending off to genai
+                # provide full image if region doesn't exist (manual events)
+                region = event.data.get("region", [0, 0, 1, 1])
                 height, width = img.shape[:2]
-                x1_rel, y1_rel, width_rel, height_rel = event.data["region"]
+                x1_rel, y1_rel, width_rel, height_rel = region
 
                 x1, y1 = int(x1_rel * width), int(y1_rel * height)
                 cropped_image = img[
@@ -344,7 +360,7 @@ class EmbeddingMaintainer(threading.Thread):
             [snapshot_image]
             if event.has_snapshot and source == "snapshot"
             else (
-                [thumbnail for data in self.tracked_events[event_id]]
+                [data["thumbnail"] for data in self.tracked_events[event_id]]
                 if len(self.tracked_events.get(event_id, [])) > 0
                 else [thumbnail]
             )

@@ -25,6 +25,9 @@ def should_update_db(prev_event: Event, current_event: Event) -> bool:
             or prev_event["entered_zones"] != current_event["entered_zones"]
             or prev_event["thumbnail"] != current_event["thumbnail"]
             or prev_event["end_time"] != current_event["end_time"]
+            or prev_event["average_estimated_speed"]
+            != current_event["average_estimated_speed"]
+            or prev_event["max_estimated_speed"] != current_event["max_estimated_speed"]
         ):
             return True
     return False
@@ -75,25 +78,30 @@ class EventProcessor(threading.Thread):
             if update == None:
                 continue
 
-            source_type, event_type, camera, event_data = update
+            source_type, event_type, camera, _, event_data = update
 
             logger.debug(
                 f"Event received: {source_type} {event_type} {camera} {event_data['id']}"
             )
 
             if source_type == EventTypeEnum.tracked_object:
+                id = event_data["id"]
                 self.timeline_queue.put(
                     (
                         camera,
                         source_type,
                         event_type,
-                        self.events_in_process.get(event_data["id"]),
+                        self.events_in_process.get(id),
                         event_data,
                     )
                 )
 
-                if event_type == EventStateEnum.start:
-                    self.events_in_process[event_data["id"]] = event_data
+                # if this is the first message, just store it and continue, its not time to insert it in the db
+                if (
+                    event_type == EventStateEnum.start
+                    or id not in self.events_in_process
+                ):
+                    self.events_in_process[id] = event_data
                     continue
 
                 self.handle_object_detection(event_type, camera, event_data)
@@ -122,10 +130,6 @@ class EventProcessor(threading.Thread):
     ) -> None:
         """handle tracked object event updates."""
         updated_db = False
-
-        # if this is the first message, just store it and continue, its not time to insert it in the db
-        if event_type == EventStateEnum.start:
-            self.events_in_process[event_data["id"]] = event_data
 
         if should_update_db(self.events_in_process[event_data["id"]], event_data):
             updated_db = True
@@ -209,7 +213,10 @@ class EventProcessor(threading.Thread):
                     "score": score,
                     "top_score": event_data["top_score"],
                     "attributes": attributes,
+                    "average_estimated_speed": event_data["average_estimated_speed"],
+                    "max_estimated_speed": event_data["max_estimated_speed"],
                     "type": "object",
+                    "max_severity": event_data.get("max_severity"),
                 },
             }
 

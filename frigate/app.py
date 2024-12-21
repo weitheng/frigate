@@ -36,6 +36,7 @@ from frigate.const import (
     EXPORT_DIR,
     MODEL_CACHE_DIR,
     RECORD_DIR,
+    SHM_FRAMES_VAR,
 )
 from frigate.db.sqlitevecq import SqliteVecQueueDatabase
 from frigate.embeddings import EmbeddingsContext, manage_embeddings
@@ -68,6 +69,7 @@ from frigate.stats.util import stats_init
 from frigate.storage import StorageMaintainer
 from frigate.timeline import TimelineProcessor
 from frigate.util.builtin import empty_and_close_queue
+from frigate.util.image import SharedMemoryFrameManager, UntrackedSharedMemory
 from frigate.util.object import get_camera_regions_grid
 from frigate.version import VERSION
 from frigate.video import capture_camera, track_camera
@@ -90,6 +92,7 @@ class FrigateApp:
         self.processes: dict[str, int] = {}
         self.embeddings: Optional[EmbeddingsContext] = None
         self.region_grids: dict[str, list[list[dict[str, int]]]] = {}
+        self.frame_manager = SharedMemoryFrameManager()
         self.config = config
 
     def ensure_dirs(self) -> None:
@@ -325,20 +328,20 @@ class FrigateApp:
                         for det in self.config.detectors.values()
                     ]
                 )
-                shm_in = mp.shared_memory.SharedMemory(
+                shm_in = UntrackedSharedMemory(
                     name=name,
                     create=True,
                     size=largest_frame,
                 )
             except FileExistsError:
-                shm_in = mp.shared_memory.SharedMemory(name=name)
+                shm_in = UntrackedSharedMemory(name=name)
 
             try:
-                shm_out = mp.shared_memory.SharedMemory(
+                shm_out = UntrackedSharedMemory(
                     name=f"out-{name}", create=True, size=20 * 6 * 4
                 )
             except FileExistsError:
-                shm_out = mp.shared_memory.SharedMemory(name=f"out-{name}")
+                shm_out = UntrackedSharedMemory(name=f"out-{name}")
 
             self.detection_shms.append(shm_in)
             self.detection_shms.append(shm_out)
@@ -431,6 +434,11 @@ class FrigateApp:
                 logger.info(f"Capture process not started for disabled camera {name}")
                 continue
 
+            # pre-create shms
+            for i in range(shm_frame_count):
+                frame_size = config.frame_shape_yuv[0] * config.frame_shape_yuv[1]
+                self.frame_manager.create(f"{config.name}_frame{i}", frame_size)
+
             capture_process = util.Process(
                 target=capture_camera,
                 name=f"camera_capture:{name}",
@@ -516,7 +524,10 @@ class FrigateApp:
         if cam_total_frame_size == 0.0:
             return 0
 
-        shm_frame_count = min(50, int(available_shm / (cam_total_frame_size)))
+        shm_frame_count = min(
+            int(os.environ.get(SHM_FRAMES_VAR, "50")),
+            int(available_shm / (cam_total_frame_size)),
+        )
 
         logger.debug(
             f"Calculated total camera size {available_shm} / {cam_total_frame_size} :: {shm_frame_count} frames for each camera in SHM"
@@ -710,6 +721,7 @@ class FrigateApp:
         self.event_metadata_updater.stop()
         self.inter_zmq_proxy.stop()
 
+        self.frame_manager.cleanup()
         while len(self.detection_shms) > 0:
             shm = self.detection_shms.pop()
             shm.close()

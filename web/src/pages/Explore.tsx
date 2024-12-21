@@ -1,6 +1,6 @@
 import {
   useEmbeddingsReindexProgress,
-  useEventUpdate,
+  useTrackedObjectUpdate,
   useModelState,
 } from "@/api/ws";
 import ActivityIndicator from "@/components/indicators/activity-indicator";
@@ -116,6 +116,7 @@ export default function Explore() {
           is_submitted: searchSearchParams["is_submitted"],
           has_clip: searchSearchParams["has_clip"],
           event_id: searchSearchParams["event_id"],
+          sort: searchSearchParams["sort"],
           limit:
             Object.keys(searchSearchParams).length == 0 ? API_LIMIT : undefined,
           timezone,
@@ -148,6 +149,7 @@ export default function Explore() {
         is_submitted: searchSearchParams["is_submitted"],
         has_clip: searchSearchParams["has_clip"],
         event_id: searchSearchParams["event_id"],
+        sort: searchSearchParams["sort"],
         timezone,
         include_thumbnails: 0,
       },
@@ -165,12 +167,17 @@ export default function Explore() {
 
     const [url, params] = searchQuery;
 
-    // If it's not the first page, use the last item's start_time as the 'before' parameter
+    const isAscending = params.sort?.includes("date_asc");
+
     if (pageIndex > 0 && previousPageData) {
       const lastDate = previousPageData[previousPageData.length - 1].start_time;
       return [
         url,
-        { ...params, before: lastDate.toString(), limit: API_LIMIT },
+        {
+          ...params,
+          [isAscending ? "after" : "before"]: lastDate.toString(),
+          limit: API_LIMIT,
+        },
       ];
     }
 
@@ -227,15 +234,15 @@ export default function Explore() {
 
   // mutation and revalidation
 
-  const eventUpdate = useEventUpdate();
+  const trackedObjectUpdate = useTrackedObjectUpdate();
 
   useEffect(() => {
-    if (eventUpdate) {
+    if (trackedObjectUpdate) {
       mutate();
     }
     // mutate / revalidate when event description updates come in
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eventUpdate]);
+  }, [trackedObjectUpdate]);
 
   // embeddings reindex progress
 

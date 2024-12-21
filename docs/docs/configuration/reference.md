@@ -640,7 +640,10 @@ cameras:
       front_steps:
         # Required: List of x,y coordinates to define the polygon of the zone.
         # NOTE: Presence in a zone is evaluated only based on the bottom center of the objects bounding box.
-        coordinates: 0.284,0.997,0.389,0.869,0.410,0.745
+        coordinates: 0.033,0.306,0.324,0.138,0.439,0.185,0.042,0.428
+        # Optional: The real-world distances of a 4-sided zone used for zones with speed estimation enabled (default: none)
+        # List distances in order of the zone points coordinates and use the unit system defined in the ui config
+        distances: 10,15,12,11
         # Optional: Number of consecutive frames required for object to be considered present in the zone (default: shown below).
         inertia: 3
         # Optional: Number of seconds that an object must loiter to be considered in the zone (default: shown below)
@@ -687,6 +690,7 @@ cameras:
     # to enable PTZ controls.
     onvif:
       # Required: host of the camera being connected to.
+      # NOTE: HTTP is assumed by default; HTTPS is supported if you specify the scheme, ex: "https://0.0.0.0".
       host: 0.0.0.0
       # Optional: ONVIF port for device (default: shown below).
       port: 8000
@@ -695,6 +699,8 @@ cameras:
       user: admin
       # Optional: password for login.
       password: admin
+      # Optional: Skip TLS verification from the ONVIF server (default: shown below)
+      tls_insecure: False
       # Optional: Ignores time synchronization mismatches between the camera and the server during authentication.
       # Using NTP on both ends is recommended and this should only be set to True in a "safe" environment due to the security risk it represents.
       ignore_time_mismatch: False
@@ -786,6 +792,9 @@ ui:
   # https://www.gnu.org/software/libc/manual/html_node/Formatting-Calendar-Time.html
   # possible values are shown above (default: not set)
   strftime_fmt: "%Y/%m/%d %H:%M"
+  # Optional: Set the unit system to either "imperial" or "metric" (default: metric)
+  # Used in the UI and in MQTT topics
+  unit_system: metric
 
 # Optional: Telemetry configuration
 telemetry:

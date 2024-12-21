@@ -29,6 +29,7 @@ from frigate.util.builtin import (
 )
 from frigate.util.config import (
     StreamInfoRetriever,
+    find_config_file,
     get_relative_coordinates,
     migrate_frigate_config,
 )
@@ -67,7 +68,6 @@ logger = logging.getLogger(__name__)
 
 yaml = YAML()
 
-DEFAULT_CONFIG_FILE = "/config/config.yml"
 DEFAULT_CONFIG = """
 mqtt:
   enabled: False
@@ -231,12 +231,16 @@ def verify_recording_segments_setup_with_reasonable_time(
     try:
         seg_arg_index = record_args.index("-segment_time")
     except ValueError:
-        raise ValueError(f"Camera {camera_config.name} has no segment_time in \
-                         recording output args, segment args are required for record.")
+        raise ValueError(
+            f"Camera {camera_config.name} has no segment_time in \
+                         recording output args, segment args are required for record."
+        )
 
     if int(record_args[seg_arg_index + 1]) > 60:
-        raise ValueError(f"Camera {camera_config.name} has invalid segment_time output arg, \
-                         segment_time must be 60 or less.")
+        raise ValueError(
+            f"Camera {camera_config.name} has invalid segment_time output arg, \
+                         segment_time must be 60 or less."
+        )
 
 
 def verify_zone_objects_are_tracked(camera_config: CameraConfig) -> None:
@@ -635,16 +639,13 @@ class FrigateConfig(FrigateBaseModel):
 
     @classmethod
     def load(cls, **kwargs):
-        config_path = os.environ.get("CONFIG_FILE", DEFAULT_CONFIG_FILE)
-
-        if not os.path.isfile(config_path):
-            config_path = config_path.replace("yml", "yaml")
+        config_path = find_config_file()
 
         # No configuration file found, create one.
         new_config = False
         if not os.path.isfile(config_path):
             logger.info("No config file found, saving default config")
-            config_path = DEFAULT_CONFIG_FILE
+            config_path = config_path
             new_config = True
         else:
             # Check if the config file needs to be migrated.
