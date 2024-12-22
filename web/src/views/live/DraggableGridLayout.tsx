@@ -1,5 +1,6 @@
 import { usePersistence } from "@/hooks/use-persistence";
 import {
+  AllGroupsStreamingSettings,
   BirdseyeConfig,
   CameraConfig,
   FrigateConfig,
@@ -56,6 +57,10 @@ type DraggableGridLayoutProps = {
   setIsEditMode: React.Dispatch<React.SetStateAction<boolean>>;
   fullscreen: boolean;
   toggleFullscreen: () => void;
+  allGroupsStreamingSettings: AllGroupsStreamingSettings;
+  setAllGroupsStreamingSettings: React.Dispatch<
+    React.SetStateAction<AllGroupsStreamingSettings>
+  >;
 };
 export default function DraggableGridLayout({
   cameras,
@@ -70,6 +75,8 @@ export default function DraggableGridLayout({
   setIsEditMode,
   fullscreen,
   toggleFullscreen,
+  allGroupsStreamingSettings,
+  setAllGroupsStreamingSettings,
 }: DraggableGridLayoutProps) {
   const { data: config } = useSWR<FrigateConfig>("config");
   const birdseyeConfig = useMemo(() => config?.birdseye, [config]);
@@ -78,6 +85,16 @@ export default function DraggableGridLayout({
 
   const { preferredLiveModes, setPreferredLiveModes, resetPreferredLiveMode } =
     useCameraLiveMode(cameras, windowVisible);
+
+  const [globalAutoLive] = usePersistence("autoLiveView", true);
+
+  const currentGroupStreamingSettings = useMemo(() => {
+    if (cameraGroup && cameraGroup != "default" && allGroupsStreamingSettings) {
+      return allGroupsStreamingSettings[cameraGroup];
+    }
+  }, [allGroupsStreamingSettings, cameraGroup]);
+
+  // grid layout
 
   const ResponsiveGridLayout = useMemo(() => WidthProvider(Responsive), []);
 
@@ -372,6 +389,7 @@ export default function DraggableGridLayout({
             setOpen={setEditGroup}
             currentGroups={groups}
             activeGroup={group}
+            setAllGroupsStreamingSettings={setAllGroupsStreamingSettings}
           />
           <ResponsiveGridLayout
             className="grid-layout"
@@ -420,9 +438,25 @@ export default function DraggableGridLayout({
               } else {
                 grow = "aspect-video";
               }
+              const streamName =
+                currentGroupStreamingSettings?.[camera.name]?.streamName ||
+                Object.values(camera.live.streams)[0];
+              const autoLive =
+                currentGroupStreamingSettings?.[camera.name]?.streamType !==
+                "no-streaming";
+              const showStillWithoutActivity =
+                currentGroupStreamingSettings?.[camera.name]?.streamType !==
+                "continuous";
+              const useWebGL =
+                currentGroupStreamingSettings?.[camera.name]
+                  ?.compatibilityMode || false;
               return (
                 <LivePlayerGridItem
                   key={camera.name}
+                  streamName={streamName}
+                  autoLive={autoLive ?? globalAutoLive}
+                  showStillWithoutActivity={showStillWithoutActivity ?? true}
+                  useWebGL={useWebGL}
                   cameraRef={cameraRef}
                   className={cn(
                     "rounded-lg bg-black md:rounded-2xl",
@@ -610,6 +644,10 @@ type LivePlayerGridItemProps = {
   onClick: () => void;
   onError: (e: LivePlayerError) => void;
   onResetLiveMode: () => void;
+  streamName: string;
+  autoLive: boolean;
+  showStillWithoutActivity: boolean;
+  useWebGL: boolean;
 };
 
 const LivePlayerGridItem = React.forwardRef<
@@ -631,6 +669,10 @@ const LivePlayerGridItem = React.forwardRef<
       onClick,
       onError,
       onResetLiveMode,
+      autoLive,
+      showStillWithoutActivity,
+      streamName,
+      useWebGL,
       ...props
     },
     ref,
@@ -650,10 +692,15 @@ const LivePlayerGridItem = React.forwardRef<
           windowVisible={windowVisible}
           cameraConfig={cameraConfig}
           preferredLiveMode={preferredLiveMode}
+          streamName={streamName}
           onClick={onClick}
           onError={onError}
           onResetLiveMode={onResetLiveMode}
           containerRef={ref as React.RefObject<HTMLDivElement>}
+          autoLive={autoLive}
+          playInBackground={false}
+          showStillWithoutActivity={showStillWithoutActivity}
+          useWebGL={useWebGL}
         />
         {children}
       </div>
