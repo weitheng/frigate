@@ -43,6 +43,21 @@ export default defineConfig({
         main: resolve(__dirname, "index.html"),
         login: resolve(__dirname, "login.html"),
       },
+       output: {
+         // Ensure Monaco editor chunks are placed in a predictable location
+         chunkFileNames: (chunkInfo) => {
+             if (chunkInfo.name.includes('monaco')) {
+                 return 'monacoeditorwork/[name].[hash].js';
+             }
+             return 'chunks/[name].[hash].js';
+         },
+         assetFileNames: (assetInfo) => {
+             if (assetInfo.name.includes('monaco')) {
+                 return 'monacoeditorwork/[name].[hash][extname]';
+             }
+             return 'assets/[name].[hash][extname]';
+         },
+       },
     },
   },
   plugins: [
