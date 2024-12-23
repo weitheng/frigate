@@ -93,11 +93,6 @@ import {
   SelectItem,
   SelectTrigger,
 } from "@/components/ui/select";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { usePersistence } from "@/hooks/use-persistence";
 import { TooltipPortal } from "@radix-ui/react-tooltip";
 
