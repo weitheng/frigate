@@ -1,10 +1,15 @@
-import { CameraGroupConfig, FrigateConfig } from "@/types/frigateConfig";
+import {
+  AllGroupsStreamingSettings,
+  CameraGroupConfig,
+  FrigateConfig,
+  GroupStreamingSettings,
+} from "@/types/frigateConfig";
 import { isDesktop, isMobile } from "react-device-detect";
 import useSWR from "swr";
 import { MdHome } from "react-icons/md";
 import { usePersistedOverlayState } from "@/hooks/use-overlay-state";
 import { Button, buttonVariants } from "../ui/button";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { LuPencil, LuPlus } from "react-icons/lu";
 import {
@@ -43,7 +48,6 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import axios from "axios";
-import FilterSwitch from "./FilterSwitch";
 import { HiOutlineDotsVertical, HiTrash } from "react-icons/hi";
 import IconWrapper from "../ui/icon-wrapper";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -66,11 +70,20 @@ import {
   MobilePageHeader,
   MobilePageTitle,
 } from "../mobile/MobilePage";
+import { Label } from "../ui/label";
+import { Switch } from "../ui/switch";
+import { CameraStreamingDialog } from "../settings/CameraStreamingDialog";
 
 type CameraGroupSelectorProps = {
   className?: string;
+  setAllGroupsStreamingSettings: React.Dispatch<
+    React.SetStateAction<AllGroupsStreamingSettings>
+  >;
 };
-export function CameraGroupSelector({ className }: CameraGroupSelectorProps) {
+export function CameraGroupSelector({
+  className,
+  setAllGroupsStreamingSettings,
+}: CameraGroupSelectorProps) {
   const { data: config } = useSWR<FrigateConfig>("config");
 
   // tooltip
@@ -124,6 +137,7 @@ export function CameraGroupSelector({ className }: CameraGroupSelectorProps) {
         activeGroup={group}
         setGroup={setGroup}
         deleteGroup={deleteGroup}
+        setAllGroupsStreamingSettings={setAllGroupsStreamingSettings}
       />
       <Scroller className={`${isMobile ? "whitespace-nowrap" : ""}`}>
         <div
@@ -213,6 +227,9 @@ type NewGroupDialogProps = {
   activeGroup?: string;
   setGroup: (value: string | undefined, replace?: boolean | undefined) => void;
   deleteGroup: () => void;
+  setAllGroupsStreamingSettings: React.Dispatch<
+    React.SetStateAction<AllGroupsStreamingSettings>
+  >;
 };
 function NewGroupDialog({
   open,
@@ -221,6 +238,7 @@ function NewGroupDialog({
   activeGroup,
   setGroup,
   deleteGroup,
+  setAllGroupsStreamingSettings,
 }: NewGroupDialogProps) {
   const { mutate: updateConfig } = useSWR<FrigateConfig>("config");
 
@@ -403,6 +421,7 @@ function NewGroupDialog({
                 setIsLoading={setIsLoading}
                 onSave={onSave}
                 onCancel={onCancel}
+                setAllGroupsStreamingSettings={setAllGroupsStreamingSettings}
               />
             </>
           )}
@@ -417,12 +436,16 @@ type EditGroupDialogProps = {
   setOpen: (open: boolean) => void;
   currentGroups: [string, CameraGroupConfig][];
   activeGroup?: string;
+  setAllGroupsStreamingSettings: React.Dispatch<
+    React.SetStateAction<AllGroupsStreamingSettings>
+  >;
 };
 export function EditGroupDialog({
   open,
   setOpen,
   currentGroups,
   activeGroup,
+  setAllGroupsStreamingSettings,
 }: EditGroupDialogProps) {
   const Overlay = isDesktop ? Dialog : MobilePage;
   const Content = isDesktop ? DialogContent : MobilePageContent;
@@ -474,6 +497,7 @@ export function EditGroupDialog({
               setIsLoading={setIsLoading}
               onSave={() => setOpen(false)}
               onCancel={() => setOpen(false)}
+              setAllGroupsStreamingSettings={setAllGroupsStreamingSettings}
             />
           </div>
         </Content>
@@ -594,6 +618,9 @@ type CameraGroupEditProps = {
   setIsLoading: React.Dispatch<React.SetStateAction<boolean>>;
   onSave?: () => void;
   onCancel?: () => void;
+  setAllGroupsStreamingSettings: React.Dispatch<
+    React.SetStateAction<AllGroupsStreamingSettings>
+  >;
 };
 
 export function CameraGroupEdit({
@@ -603,9 +630,16 @@ export function CameraGroupEdit({
   setIsLoading,
   onSave,
   onCancel,
+  setAllGroupsStreamingSettings,
 }: CameraGroupEditProps) {
   const { data: config, mutate: updateConfig } =
     useSWR<FrigateConfig>("config");
+
+  const [groupStreamingSettings, setGroupStreamingSettings] =
+    useState<GroupStreamingSettings>({});
+
+  const [persistedGroupStreamingSettings, setPersistedGroupStreamingSettings] =
+    usePersistence<AllGroupsStreamingSettings>("streaming-settings");
 
   const birdseyeConfig = useMemo(() => config?.birdseye, [config]);
 
@@ -656,6 +690,16 @@ export function CameraGroupEdit({
 
       setIsLoading(true);
 
+      // update streaming settings
+      const updatedSettings: AllGroupsStreamingSettings = {
+        ...Object.fromEntries(
+          Object.entries(persistedGroupStreamingSettings || {}).filter(
+            ([key]) => key !== editingGroup?.[0],
+          ),
+        ),
+        [values.name]: groupStreamingSettings,
+      };
+
       let renamingQuery = "";
       if (editingGroup && editingGroup[0] !== values.name) {
         renamingQuery = `camera_groups.${editingGroup[0]}&`;
@@ -679,7 +723,7 @@ export function CameraGroupEdit({
             requires_restart: 0,
           },
         )
-        .then((res) => {
+        .then(async (res) => {
           if (res.status === 200) {
             toast.success(`Camera group (${values.name}) has been saved.`, {
               position: "top-center",
@@ -688,6 +732,8 @@ export function CameraGroupEdit({
             if (onSave) {
               onSave();
             }
+            await setPersistedGroupStreamingSettings(updatedSettings);
+            setAllGroupsStreamingSettings(updatedSettings);
           } else {
             toast.error(`Failed to save config changes: ${res.statusText}`, {
               position: "top-center",
@@ -704,7 +750,17 @@ export function CameraGroupEdit({
           setIsLoading(false);
         });
     },
-    [currentGroups, setIsLoading, onSave, updateConfig, editingGroup],
+    [
+      currentGroups,
+      setIsLoading,
+      onSave,
+      updateConfig,
+      editingGroup,
+      groupStreamingSettings,
+      setPersistedGroupStreamingSettings,
+      persistedGroupStreamingSettings,
+      setAllGroupsStreamingSettings,
+    ],
   );
 
   const form = useForm<z.infer<typeof formSchema>>({
@@ -716,6 +772,20 @@ export function CameraGroupEdit({
       cameras: editingGroup && editingGroup[1].cameras,
     },
   });
+
+  // streaming settings
+
+  useEffect(() => {
+    if (editingGroup && editingGroup[0] && persistedGroupStreamingSettings) {
+      setGroupStreamingSettings(
+        persistedGroupStreamingSettings[editingGroup[0]] || {},
+      );
+    }
+  }, [
+    editingGroup,
+    persistedGroupStreamingSettings,
+    setGroupStreamingSettings,
+  ]);
 
   return (
     <Form {...form}>
@@ -758,16 +828,38 @@ export function CameraGroupEdit({
                   ...Object.keys(config?.cameras ?? {}),
                 ].map((camera) => (
                   <FormControl key={camera}>
-                    <FilterSwitch
-                      isChecked={field.value && field.value.includes(camera)}
-                      label={camera.replaceAll("_", " ")}
-                      onCheckedChange={(checked) => {
-                        const updatedCameras = checked
-                          ? [...(field.value || []), camera]
-                          : (field.value || []).filter((c) => c !== camera);
-                        form.setValue("cameras", updatedCameras);
-                      }}
-                    />
+                    <div className="flex items-center justify-between gap-1">
+                      <Label
+                        className="mx-2 w-full cursor-pointer capitalize text-primary"
+                        htmlFor={camera.replaceAll("_", " ")}
+                      >
+                        {camera.replaceAll("_", " ")}
+                      </Label>
+
+                      <div className="flex items-center gap-x-2">
+                        {camera !== "birdseye" && (
+                          <CameraStreamingDialog
+                            camera={camera}
+                            selectedCameras={field.value}
+                            config={config}
+                            groupStreamingSettings={groupStreamingSettings}
+                            setGroupStreamingSettings={
+                              setGroupStreamingSettings
+                            }
+                          />
+                        )}
+                        <Switch
+                          id={camera.replaceAll("_", " ")}
+                          checked={field.value && field.value.includes(camera)}
+                          onCheckedChange={(checked) => {
+                            const updatedCameras = checked
+                              ? [...(field.value || []), camera]
+                              : (field.value || []).filter((c) => c !== camera);
+                            form.setValue("cameras", updatedCameras);
+                          }}
+                        />
+                      </div>
+                    </div>
                   </FormControl>
                 ))}
               </FormItem>
