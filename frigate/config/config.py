@@ -459,13 +459,12 @@ class FrigateConfig(FrigateBaseModel):
                 camera_config.ffmpeg.hwaccel_args = self.ffmpeg.hwaccel_args
 
             for input in camera_config.ffmpeg.inputs:
-                need_record_fourcc = False and "record" in input.roles
                 need_detect_dimensions = "detect" in input.roles and (
                     camera_config.detect.height is None
                     or camera_config.detect.width is None
                 )
 
-                if need_detect_dimensions or need_record_fourcc:
+                if need_detect_dimensions:
                     stream_info = {"width": 0, "height": 0, "fourcc": None}
                     try:
                         stream_info = stream_info_retriever.get_stream_info(
@@ -487,14 +486,6 @@ class FrigateConfig(FrigateBaseModel):
                         stream_info["height"]
                         if stream_info.get("height")
                         else DEFAULT_DETECT_DIMENSIONS["height"]
-                    )
-
-                if need_record_fourcc:
-                    # Apple only supports HEVC if it is hvc1 (vs. hev1)
-                    camera_config.ffmpeg.output_args._force_record_hvc1 = (
-                        stream_info["fourcc"] == "hevc"
-                        if stream_info.get("hevc")
-                        else False
                     )
 
             # Warn if detect fps > 10

@@ -8,7 +8,6 @@ export interface UiConfig {
   strftime_fmt?: string;
   dashboard: boolean;
   order: number;
-  unit_system?: "metric" | "imperial";
 }
 
 export interface BirdseyeConfig {
@@ -88,7 +87,7 @@ export interface CameraConfig {
   live: {
     height: number;
     quality: number;
-    streams: { [key: string]: string };
+    stream_name: string;
   };
   motion: {
     contour_area: number;
@@ -216,7 +215,6 @@ export interface CameraConfig {
   zones: {
     [zoneName: string]: {
       coordinates: string;
-      distances: string[];
       filters: Record<string, unknown>;
       inertia: number;
       loitering_time: number;
@@ -230,22 +228,6 @@ export type CameraGroupConfig = {
   cameras: string[];
   icon: IconName;
   order: number;
-};
-
-export type StreamType = "no-streaming" | "smart" | "continuous";
-
-export type CameraStreamingSettings = {
-  streamName: string;
-  streamType: StreamType;
-  compatibilityMode: boolean;
-};
-
-export type GroupStreamingSettings = {
-  [cameraName: string]: CameraStreamingSettings;
-};
-
-export type AllGroupsStreamingSettings = {
-  [groupName: string]: GroupStreamingSettings;
 };
 
 export interface FrigateConfig {
@@ -308,6 +290,7 @@ export interface FrigateConfig {
 
   face_recognition: {
     enabled: boolean;
+    threshold: number;
   };
 
   ffmpeg: {
@@ -342,6 +325,12 @@ export interface FrigateConfig {
   };
 
   camera_groups: { [groupName: string]: CameraGroupConfig };
+
+  live: {
+    height: number;
+    quality: number;
+    stream_name: string;
+  };
 
   logger: {
     default: string;
