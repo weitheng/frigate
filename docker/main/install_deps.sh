@@ -31,7 +31,7 @@ rm /tmp/libedgetpu1-max.deb
 
 # install python3 & tflite runtime
 if [[ "${TARGETARCH}" == "amd64" ]]; then
-    pip3 install --break-system-packages https://github.com/feranick/TFlite-builds/releases/download/v2.17.0/tflite_runtime-2.17.0-cp311-cp311-linux_x86_64.whl
+    pip3 install --break-system-packages https://github.com/weitheng/tflite_noAVX/blob/main/tflite_runtime-2.17.1-cp311-cp311-linux_x86_64.whl
     pip3 install --break-system-packages https://github.com/feranick/pycoral/releases/download/2.0.2TF2.17.0/pycoral-2.0.2-cp311-cp311-linux_x86_64.whl
 fi
 
