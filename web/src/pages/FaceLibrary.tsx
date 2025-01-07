@@ -93,17 +93,23 @@ export default function FaceLibrary() {
           await refreshFaces();
           toast.success("Successfully uploaded image", { position: "top-center" });
         }
-      } catch (error) {
-        if (error.response?.data?.message) {
-          toast.error(`Failed to upload image: ${error.response.data.message}`, {
-            position: "top-center",
-          });
+      } catch (error: unknown) {
+        if (axios.isAxiosError(error)) {
+          if (error.response?.data?.message) {
+            toast.error(`Failed to upload image: ${error.response.data.message}`, {
+              position: "top-center",
+            });
+          } else {
+            toast.error(`Failed to upload image: ${error.message}`, {
+              position: "top-center",
+            });
+          }
         } else {
-          toast.error(`Failed to upload image: ${error.message}`, {
+          toast.error("Failed to upload image: Unknown error", {
             position: "top-center",
           });
         }
-        throw error; // Re-throw to be handled by UploadImageDialog
+        throw error;
       }
     },
     [pageToggle, refreshFaces],
