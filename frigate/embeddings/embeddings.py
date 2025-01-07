@@ -172,18 +172,6 @@ class Embeddings:
                 device="GPU",
             )
 
-            self.lpr_yolo_detection_model = GenericONNXEmbedding(
-                model_name="yolonas-lp",
-                model_file="yolonas_lp_detection.onnx",
-                download_urls={
-                    "yolonas_lp_detection.onnx": "YOUR_MODEL_URL_HERE"
-                },
-                model_size="large",
-                model_type=ModelTypeEnum.lpr_yolo_detect,
-                requestor=self.requestor,
-                device="GPU",
-            )
-
     def embed_thumbnail(
         self, event_id: str, thumbnail: bytes, upsert: bool = True
     ) -> ndarray:
