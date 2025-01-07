@@ -78,37 +78,33 @@ export default function FaceLibrary() {
   const [upload, setUpload] = useState(false);
 
   const onUploadImage = useCallback(
-    (file: File) => {
+    async (file: File) => {
       const formData = new FormData();
       formData.append("file", file);
-      axios
-        .post(`faces/${pageToggle}`, formData, {
+      try {
+        const resp = await axios.post(`faces/${pageToggle}`, formData, {
           headers: {
             "Content-Type": "multipart/form-data",
           },
-        })
-        .then((resp) => {
-          if (resp.status == 200) {
-            setUpload(false);
-            refreshFaces();
-            toast.success(
-              "Successfully uploaded image. View the file in the /exports folder.",
-              { position: "top-center" },
-            );
-          }
-        })
-        .catch((error) => {
-          if (error.response?.data?.message) {
-            toast.error(
-              `Failed to upload image: ${error.response.data.message}`,
-              { position: "top-center" },
-            );
-          } else {
-            toast.error(`Failed to upload image: ${error.message}`, {
-              position: "top-center",
-            });
-          }
         });
+        
+        if (resp.status === 200) {
+          setUpload(false);
+          await refreshFaces();
+          toast.success("Successfully uploaded image", { position: "top-center" });
+        }
+      } catch (error) {
+        if (error.response?.data?.message) {
+          toast.error(`Failed to upload image: ${error.response.data.message}`, {
+            position: "top-center",
+          });
+        } else {
+          toast.error(`Failed to upload image: ${error.message}`, {
+            position: "top-center",
+          });
+        }
+        throw error; // Re-throw to be handled by UploadImageDialog
+      }
     },
     [pageToggle, refreshFaces],
   );

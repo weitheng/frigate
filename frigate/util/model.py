@@ -216,6 +216,7 @@ class FaceClassificationModel:
         self.landmark_detector.loadModel("/config/model_cache/facedet/landmarkdet.yaml")
 
     def __build_classifier(self) -> None:
+        """Build face classifier from training data."""
         if not self.landmark_detector:
             return None
 
@@ -223,6 +224,15 @@ class FaceClassificationModel:
         faces = []
 
         dir = "/media/frigate/clips/faces"
+        
+        # Check if directory exists first
+        if not os.path.exists(dir):
+            logger.info("No face training directory found at %s", dir)
+            self.recognizer = None
+            self.label_map = {}
+            return
+
+        # Collect face data
         for idx, name in enumerate(os.listdir(dir)):
             if name == "train":
                 continue
@@ -232,7 +242,7 @@ class FaceClassificationModel:
             if not os.path.isdir(face_folder):
                 continue
 
-            self.label_map[idx] = name
+            face_images = []
             for image in os.listdir(face_folder):
                 img = cv2.imread(os.path.join(face_folder, image))
 
@@ -241,15 +251,31 @@ class FaceClassificationModel:
 
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 img = self.__align_face(img, img.shape[1], img.shape[0])
-                faces.append(img)
-                labels.append(idx)
+                face_images.append(img)
 
-        self.recognizer: cv2.face.LBPHFaceRecognizer = (
-            cv2.face.LBPHFaceRecognizer_create(
-                radius=2, threshold=(1 - self.config.min_score) * 1000
+            # Only add to training data if we found valid faces
+            if face_images:
+                self.label_map[idx] = name
+                faces.extend(face_images)
+                labels.extend([idx] * len(face_images))
+
+        # Only create and train recognizer if we have face data
+        if faces and labels:
+            self.recognizer: cv2.face.LBPHFaceRecognizer = (
+                cv2.face.LBPHFaceRecognizer_create(
+                    radius=2, threshold=(1 - self.config.min_score) * 1000
+                )
             )
-        )
-        self.recognizer.train(faces, np.array(labels))
+            self.recognizer.train(faces, np.array(labels))
+            logger.info(
+                "Trained face recognition model with %d faces from %d people",
+                len(faces),
+                len(self.label_map),
+            )
+        else:
+            logger.info("No valid face images found for training")
+            self.recognizer = None
+            self.label_map = {}
 
     def __align_face(
         self,
@@ -320,11 +346,17 @@ class FaceClassificationModel:
         return self.face_detector.detect(input)
 
     def classify_face(self, face_image: np.ndarray) -> tuple[str, float] | None:
+        """Classify a face image and return label and confidence score."""
         if not self.landmark_detector:
             return None
 
+        # Check if we need to build/rebuild the classifier
         if not self.label_map:
             self.__build_classifier()
+        
+        # Return None if we still don't have a trained recognizer
+        if not self.recognizer:
+            return None
 
         img = cv2.cvtColor(face_image, cv2.COLOR_BGR2GRAY)
         img = self.__align_face(img, img.shape[1], img.shape[0])

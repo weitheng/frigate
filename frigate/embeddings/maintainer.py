@@ -548,20 +548,18 @@ class EmbeddingMaintainer(threading.Thread):
         height, width = input.shape[:2]
         return (0, 0, width, height)
 
-    def _process_license_plate(
-        self, obj_data: dict[str, any], frame: np.ndarray
-    ) -> bool:
+    def _process_license_plate(self, obj_data: dict[str, any], yuv_frame: np.ndarray) -> bool:
         """Look for license plates in image."""
         id = obj_data["id"]
 
-        # don't run for non car objects
-        if obj_data.get("label") != "car":
-            logger.debug("Not a processing license plate for non car object.")
+        # Only run for vehicle objects
+        if obj_data.get("label") not in ["car", "truck", "bus", "motorcycle"]:
+            logger.debug("Not processing license plate for non-vehicle object.")
             return False
 
-        # don't run for stationary car objects
+        # don't run for stationary vehicles
         if obj_data.get("stationary") == True:
-            logger.debug("Not a processing license plate for a stationary car object.")
+            logger.debug("Not a processing license plate for a stationary vehicles.")
             return False
 
         # don't overwrite sub label for objects that have a sub label

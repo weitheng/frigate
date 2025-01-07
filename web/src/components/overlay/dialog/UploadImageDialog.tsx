@@ -7,20 +7,36 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Form, FormControl, FormField, FormItem } from "@/components/ui/form";
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+} from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useCallback } from "react";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
+import { toast } from "sonner";
 import { z } from "zod";
 
-type UploadImageDialogProps = {
+interface UploadImageDialogProps {
   open: boolean;
   title: string;
-  description?: string;
+  description: string;
   setOpen: (open: boolean) => void;
   onSave: (file: File) => void;
-};
+}
+
+// Define form schema
+const formSchema = z.object({
+  file: z.instanceof(FileList).refine((files) => files.length > 0, {
+    message: "Please select an image file.",
+  }),
+});
+
+type FormData = z.infer<typeof formSchema>;
+
 export default function UploadImageDialog({
   open,
   title,
@@ -28,56 +44,64 @@ export default function UploadImageDialog({
   setOpen,
   onSave,
 }: UploadImageDialogProps) {
-  const formSchema = z.object({
-    file: z.instanceof(FileList, { message: "Please select an image file." }),
-  });
+  const [isUploading, setIsUploading] = useState(false);
 
-  const form = useForm<z.infer<typeof formSchema>>({
+  const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
   });
-  const fileRef = form.register("file");
 
-  // upload handler
+  const handleSubmit = async (data: FormData) => {
+    if (!data.file?.[0]) {
+      return;
+    }
 
-  const onSubmit = useCallback(
-    (data: z.infer<typeof formSchema>) => {
-      if (!data["file"]) {
-        return;
-      }
-
-      onSave(data["file"]["0"]);
-    },
-    [onSave],
-  );
+    try {
+      setIsUploading(true);
+      await onSave(data.file[0]);
+      form.reset();
+      setOpen(false);
+      toast.success("File uploaded successfully");
+    } catch (error) {
+      toast.error(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsUploading(false);
+    }
+  };
 
   return (
-    <Dialog open={open} defaultOpen={false} onOpenChange={setOpen}>
-      <DialogContent>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          {description && <DialogDescription>{description}</DialogDescription>}
+          <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
         <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)}>
+          <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4">
             <FormField
               control={form.control}
               name="file"
-              render={() => (
+              render={({ field: { onChange, ...field } }) => (
                 <FormItem>
                   <FormControl>
                     <Input
-                      className="aspect-video h-40 w-full"
                       type="file"
-                      {...fileRef}
+                      accept="image/*"
+                      disabled={isUploading}
+                      onChange={(e) => {
+                        onChange(e.target.files);
+                      }}
+                      {...field}
                     />
                   </FormControl>
                 </FormItem>
               )}
             />
-            <DialogFooter className="pt-4">
-              <Button onClick={() => setOpen(false)}>Cancel</Button>
-              <Button variant="select" type="submit">
-                Save
+            <DialogFooter>
+              <Button 
+                type="submit" 
+                disabled={isUploading}
+              >
+                {isUploading ? "Uploading..." : "Save"}
               </Button>
             </DialogFooter>
           </form>

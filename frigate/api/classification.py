@@ -39,12 +39,34 @@ def get_faces():
 
 @router.post("/faces/{name}")
 async def register_face(request: Request, name: str, file: UploadFile):
-    context: EmbeddingsContext = request.app.embeddings
-    context.register_face(name, await file.read())
-    return JSONResponse(
-        status_code=200,
-        content={"success": True, "message": "Successfully registered face."},
-    )
+    try:
+        context: EmbeddingsContext = request.app.embeddings
+        file_content = await file.read()
+        
+        if not file_content:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": "Empty file uploaded"},
+            )
+            
+        result = context.register_face(name, file_content)
+        
+        if not result:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": "No face detected in image"},
+            )
+            
+        return JSONResponse(
+            status_code=200,
+            content={"success": True, "message": "Successfully registered face."},
+        )
+    except Exception as e:
+        logger.error(f"Error registering face: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"Server error: {str(e)}"},
+        )
 
 
 @router.post("/faces/train/{name}/classify")
