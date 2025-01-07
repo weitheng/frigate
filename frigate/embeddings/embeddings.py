@@ -145,7 +145,7 @@ class Embeddings:
                 model_size="large",
                 model_type=ModelTypeEnum.lpr_detect,
                 requestor=self.requestor,
-                device="CPU",
+                device="GPU",
             )
 
             self.lpr_classification_model = GenericONNXEmbedding(
@@ -157,7 +157,7 @@ class Embeddings:
                 model_size="large",
                 model_type=ModelTypeEnum.lpr_classify,
                 requestor=self.requestor,
-                device="CPU",
+                device="GPU",
             )
 
             self.lpr_recognition_model = GenericONNXEmbedding(
@@ -169,7 +169,19 @@ class Embeddings:
                 model_size="large",
                 model_type=ModelTypeEnum.lpr_recognize,
                 requestor=self.requestor,
-                device="CPU",
+                device="GPU",
+            )
+
+            self.lpr_yolo_detection_model = GenericONNXEmbedding(
+                model_name="yolonas-lp",
+                model_file="yolonas_lp_detection.onnx",
+                download_urls={
+                    "yolonas_lp_detection.onnx": "YOUR_MODEL_URL_HERE"
+                },
+                model_size="large",
+                model_type=ModelTypeEnum.lpr_yolo_detect,
+                requestor=self.requestor,
+                device="GPU",
             )
 
     def embed_thumbnail(
