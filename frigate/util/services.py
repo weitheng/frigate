@@ -393,12 +393,22 @@ def try_get_info(f, h, default="N/A"):
 
 
 def get_nvidia_gpu_stats() -> dict[int, dict]:
+    names: dict[str, int] = {}
     results = {}
     try:
         nvml.nvmlInit()
         deviceCount = nvml.nvmlDeviceGetCount()
         for i in range(deviceCount):
             handle = nvml.nvmlDeviceGetHandleByIndex(i)
+            gpu_name = nvml.nvmlDeviceGetName(handle)
+
+            # handle case where user has multiple of same GPU
+            if gpu_name in names:
+                names[gpu_name] += 1
+                gpu_name += f" ({names.get(gpu_name)})"
+            else:
+                names[gpu_name] = 1
+
             meminfo = try_get_info(nvml.nvmlDeviceGetMemoryInfo, handle)
             util = try_get_info(nvml.nvmlDeviceGetUtilizationRates, handle)
             enc = try_get_info(nvml.nvmlDeviceGetEncoderUtilization, handle)
@@ -426,7 +436,7 @@ def get_nvidia_gpu_stats() -> dict[int, dict]:
                 dec_util = -1
 
             results[i] = {
-                "name": nvml.nvmlDeviceGetName(handle),
+                "name": gpu_name,
                 "gpu": gpu_util,
                 "mem": gpu_mem_util,
                 "enc": enc_util,
