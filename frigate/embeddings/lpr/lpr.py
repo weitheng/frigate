@@ -50,62 +50,67 @@ class LicensePlateRecognition:
         Detect possible license plates in the input image using YOLO-NAS model.
         """
         # Check if model is loaded
-        if self.detection_model.runner is None:
+        if self.detection_model is None or self.detection_model.runner is None:
             logger.error("License plate detection model is not loaded")
             return []
         
-        # Check model input info
-        input_names = self.detection_model.runner.get_inputs()
-        logger.error(f"Model inputs: {[x.name for x in input_names]}")
-        logger.error(f"Input shapes: {[x.shape for x in input_names]}")
-        
-        # Convert image to RGB if needed
-        if len(image.shape) == 2:
-            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-        elif image.shape[2] == 4:
-            image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGB)
-        elif image.shape[2] == 3 and image.dtype == np.uint8:
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-        h, w = image.shape[:2]
-        
-        # Add debug logging
-        logger.error(f"Input image shape: {image.shape}, dtype: {image.dtype}")
-        
+        # Check model input info using onnxruntime directly
         try:
-            # Run detection model
-            model_output = self.detection_model([image])
-            
-            # Model output is [num_predictions, 7] where each prediction is:
-            # [x1, y1, x2, y2, confidence, class_id, num_classes]
-            predictions = model_output[0]  # Get the predictions array
-            
-            if predictions.size == 0:
-                logger.debug("No detections found")
+            import onnxruntime as ort
+            model_path = os.path.join(MODEL_CACHE_DIR, "license_plate_yolonas_s.onnx")
+            if not os.path.exists(model_path):
+                logger.error("Model file not found")
                 return []
             
-            # Filter by confidence threshold
-            valid_detections = predictions[predictions[:, 4] > self.box_thresh]
+            sess = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+            input_name = sess.get_inputs()[0].name  # Should be "input"
+            input_shape = sess.get_inputs()[0].shape  # Should be [1,3,320,320]
+            logger.debug(f"Model expects input name: {input_name}, shape: {input_shape}")
             
-            # Convert normalized coordinates to image coordinates
-            boxes = []
-            for det in valid_detections:
-                x1, y1, x2, y2 = det[:4]
-                # Convert normalized coordinates to absolute coordinates
-                x1 = int(x1 * w)
-                y1 = int(y1 * h) 
-                x2 = int(x2 * w)
-                y2 = int(y2 * h)
+            # Convert image to RGB if needed
+            if len(image.shape) == 2:
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+            elif image.shape[2] == 4:
+                image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGB)
+            elif image.shape[2] == 3 and image.dtype == np.uint8:
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+            h, w = image.shape[:2]
+            logger.debug(f"Input image shape: {image.shape}, dtype: {image.dtype}")
+            
+            try:
+                # Run detection model
+                model_output = self.detection_model([image])
                 
-                # Create polygon points
-                box = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
-                boxes.append(box)
-            
-            return self.filter_polygon(boxes, (h, w))
+                # Model output is [num_predictions, 7]
+                predictions = model_output[0]
+                
+                if predictions.size == 0:
+                    logger.debug("No detections found")
+                    return []
+                
+                # Filter by confidence threshold
+                valid_detections = predictions[predictions[:, 4] > self.box_thresh]
+                
+                # Convert normalized coordinates to image coordinates
+                boxes = []
+                for det in valid_detections:
+                    x1, y1, x2, y2 = det[:4]
+                    x1 = int(x1 * w)
+                    y1 = int(y1 * h) 
+                    x2 = int(x2 * w)
+                    y2 = int(y2 * h)
+                    box = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
+                    boxes.append(box)
+                
+                return self.filter_polygon(boxes, (h, w))
+                
+            except Exception as e:
+                logger.error(f"Error in detection: {e}")
+                return []
             
         except Exception as e:
-            logger.error(f"Error in license plate detection: {e}")
-            logger.error(f"Model output shape: {model_output[0].shape if model_output else 'None'}")
+            logger.error(f"Error loading model: {e}")
             return []
 
     def classify(

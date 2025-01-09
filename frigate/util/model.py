@@ -143,6 +143,13 @@ class ONNXModelRunner:
         elif self.type == "ort":
             return [input.name for input in self.ort.get_inputs()]
 
+    def get_inputs(self):
+        """Get model input details."""
+        if self.type == "ort":
+            return self.ort.get_inputs()
+        elif self.type == "ov":
+            return self.interpreter.inputs
+            
     def run(self, input: dict[str, Any]) -> Any:
         if self.type == "ov":
             infer_request = self.interpreter.create_infer_request()
