@@ -54,11 +54,10 @@ class LicensePlateRecognition:
             logger.error("License plate detection model is not loaded")
             return []
         
-        # Check model input/output info
-        input_names = self.detection_model.runner.get_input_names()
-        output_names = self.detection_model.runner.get_output_names()
-        logger.error(f"Model input names: {input_names}")
-        logger.error(f"Model output names: {output_names}")
+        # Check model input info
+        input_names = self.detection_model.runner.get_inputs()
+        logger.error(f"Model inputs: {[x.name for x in input_names]}")
+        logger.error(f"Input shapes: {[x.shape for x in input_names]}")
         
         # Convert image to RGB if needed
         if len(image.shape) == 2:
