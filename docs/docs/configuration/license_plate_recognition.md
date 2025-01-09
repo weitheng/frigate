@@ -9,6 +9,54 @@ Users running a Frigate+ model should ensure that `license_plate` is added to th
 
 LPR is most effective when the vehicle’s license plate is fully visible to the camera. For moving vehicles, Frigate will attempt to read the plate continuously, refining its detection and keeping the most confident result. LPR will not run on stationary vehicles.
 
+## Detection Methods
+
+Frigate uses two methods to detect and recognize license plates:
+
+1. Real-time Detection: Processes frames from the live video stream for immediate results
+2. Snapshot Processing: When an event ends, processes the high-resolution snapshot for improved accuracy
+
+If the snapshot processing finds a better quality plate reading than the real-time detection, it will update the event's sub_label. This dual-processing approach provides both quick initial results and potentially more accurate final results.
+
+### MQTT Updates
+
+When a license plate is detected or updated (either from real-time detection or snapshot processing), an update will be published to:
+```
+{MQTT_TOPIC_PREFIX}/events
+```
+
+The payload will be a JSON object containing:
+```json
+{
+    "type": "update",
+    "before": {
+        "id": "1234567890",
+        "camera": "driveway",
+        "label": "car",
+        "sub_label": null,
+        // ... other event fields ...
+    },
+    "after": {
+        "id": "1234567890",
+        "camera": "driveway",
+        "label": "car",
+        "sub_label": ["ABC123", 0.95],  // [plate_number, confidence]
+        // ... other event fields ...
+    }
+}
+```
+
+This follows the standard Frigate event update format, providing the full event context before and after the license plate detection.
+
+You can use these updates to trigger automations when specific plates are detected or to track all detected plates.
+
+You can disable snapshot processing by setting:
+```yaml
+lpr:
+  enabled: true
+  use_snapshot: false  # Disable secondary snapshot processing
+```
+
 ## Minimum System Requirements
 
 License plate recognition works by running AI models locally on your system. The models are relatively lightweight and run on your CPU. At least 4GB of RAM is required.

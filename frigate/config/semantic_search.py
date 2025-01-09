@@ -56,3 +56,7 @@ class LicensePlateRecognitionConfig(FrigateBaseModel):
     known_plates: Optional[Dict[str, List[str]]] = Field(
         default={}, title="Known plates to track."
     )
+    use_snapshot: bool = Field(
+        default=True,
+        title="Use snapshot for license plate recognition.",
+    )

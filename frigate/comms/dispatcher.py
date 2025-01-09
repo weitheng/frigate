@@ -20,6 +20,7 @@ from frigate.const import (
     UPDATE_EVENT_DESCRIPTION,
     UPDATE_MODEL_STATE,
     UPSERT_REVIEW_SEGMENT,
+    UPDATE_OBJECT_SUB_LABEL,
 )
 from frigate.models import Event, Previews, Recordings, ReviewSegment
 from frigate.ptz.onvif import OnvifCommandEnum, OnvifController
@@ -192,6 +193,31 @@ class Dispatcher:
                 json.dumps(self.embeddings_reindex.copy()),
             )
 
+        def handle_update_object_sub_label():
+            event: Event = Event.get(Event.id == payload["id"])
+            # Store the before state
+            before_state = event.as_dict()
+            
+            # Update the event
+            # Format sub_label as [label, score] for event format
+            event.sub_label = [payload["sub_label"], payload["sub_label_score"]]
+            event.save()
+            
+            # Get the after state
+            after_state = event.as_dict()
+            
+            # Publish using standard event update format
+            self.publish(
+                "events",
+                json.dumps(
+                    {
+                        "type": "update",
+                        "before": before_state,
+                        "after": after_state,
+                    }
+                ),
+            )
+
         # Dictionary mapping topic to handlers
         topic_handlers = {
             INSERT_MANY_RECORDINGS: handle_insert_many_recordings,
@@ -207,6 +233,7 @@ class Dispatcher:
             "embeddingsReindexProgress": handle_embeddings_reindex_progress,
             "modelState": handle_model_state,
             "onConnect": handle_on_connect,
+            UPDATE_OBJECT_SUB_LABEL: handle_update_object_sub_label,
         }
 
         if topic.endswith("set") or topic.endswith("ptz"):

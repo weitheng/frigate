@@ -23,6 +23,8 @@ from frigate.util.builtin import serialize
 
 from .functions.onnx import GenericONNXEmbedding, ModelTypeEnum
 from .types import EmbeddingsMetrics
+from frigate.embeddings.lpr.lpr_classifier import LicensePlateClassifier
+from frigate.embeddings.lpr.lpr import LicensePlateRecognition
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +172,20 @@ class Embeddings:
                 model_type=ModelTypeEnum.lpr_recognize,
                 requestor=self.requestor,
                 device="CPU",
+            )
+
+            # Create LPR instance
+            self.lpr = LicensePlateRecognition(
+                config=self.config.lpr,
+                requestor=self.requestor,
+                embeddings=self,
+            )
+
+            # Create LPR classifier
+            self.lpr_classifier = LicensePlateClassifier(
+                config=self.config.lpr,
+                requestor=self.requestor,
+                lpr=self.lpr,
             )
 
     def embed_thumbnail(

@@ -287,6 +287,16 @@ class EmbeddingMaintainer(threading.Thread):
                 if event.data.get("type") != "object":
                     continue
 
+                # Process snapshot for license plate if this was a vehicle event
+                if (
+                    event.label == "car" 
+                    and event.has_snapshot 
+                    and self.lpr_config.enabled
+                ):
+                    snapshot_path = os.path.join(CLIPS_DIR, f"{event.camera}-{event.id}.jpg")
+                    if os.path.exists(snapshot_path):
+                        self._process_license_plate_snapshot(event.id, snapshot_path, event.camera)
+
                 # Extract valid thumbnail
                 thumbnail = base64.b64decode(event.thumbnail)
 
@@ -846,3 +856,13 @@ class EmbeddingMaintainer(threading.Thread):
         )
 
         self._embed_description(event, embed_image)
+
+    def _process_license_plate_snapshot(self, event_id: str, snapshot_path: str, camera: str) -> None:
+        """Process a snapshot for license plate detection using the high-res classifier."""
+        if not self.lpr_config.enabled or not self.embeddings.lpr_classifier:
+            return
+
+        try:
+            self.embeddings.lpr_classifier.process_event_snapshot(event_id, snapshot_path, camera)
+        except Exception as e:
+            logger.error(f"Error processing license plate snapshot: {e}")
