@@ -240,14 +240,19 @@ class GenericONNXEmbedding:
                 # Ensure uint8 type (0-255)
                 img = img.astype(np.uint8)
                 
+                # Add debug logging
+                logger.debug(f"Preprocessed image shape: {img.shape}, dtype: {img.dtype}")
+                
                 # YOLO-NAS expects NCHW format (batch_size, channels, height, width)
                 if len(img.shape) == 3:  # HWC format
                     img = np.transpose(img, (2, 0, 1))  # Convert to CHW
                 img = np.expand_dims(img, axis=0)  # Add batch dimension -> NCHW
                 
+                logger.debug(f"Final input tensor shape: {img.shape}, dtype: {img.dtype}")
+                
                 # Use "input" as the input name to match model expectations
                 preprocessed.append({"input": img})
-                
+            
             return preprocessed
         elif self.model_type == ModelTypeEnum.lpr_classify:
             processed = []
