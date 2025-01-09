@@ -11,7 +11,7 @@ from shapely.geometry import Polygon
 from frigate.comms.inter_process import InterProcessRequestor
 from frigate.config.semantic_search import LicensePlateRecognitionConfig
 from frigate.embeddings.embeddings import Embeddings
-from frigate.util import draw_box_with_label
+from frigate.util.image import draw_box_with_label
 
 logger = logging.getLogger(__name__)
 
