@@ -237,8 +237,8 @@ class GenericONNXEmbedding:
                 # Resize to 320x320
                 img = cv2.resize(img, (320, 320))
                 
-                # Convert to float32 and normalize to [0,1]
-                img = img.astype(np.float32) / 255.0
+                # Ensure uint8 type (0-255)
+                img = img.astype(np.uint8)
                 
                 # YOLO-NAS expects NCHW format (batch_size, channels, height, width)
                 if len(img.shape) == 3:  # HWC format
