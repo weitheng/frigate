@@ -79,7 +79,8 @@ class LicensePlateRecognition:
                 return []
             
             predictions = model_output[0]
-            logger.warn(f"Predictions shape: {predictions.shape if predictions is not None else 'None'}")
+            logger.warn(f"Predictions shape: {predictions.shape if predictions is not None else 'None'},"
+                f"Detection found: confidence={predictions[4]:.2f}")
             
             # Handle single detection case - reshape to 2D array
             if len(predictions.shape) == 1:
@@ -93,7 +94,7 @@ class LicensePlateRecognition:
             valid_detections = predictions[predictions[:, 4] > self.box_thresh]
             
             if len(valid_detections) == 0:
-                logger.warn("No detections above confidence threshold")
+                logger.warn(f"Detection confidence {predictions[4]:.2f} below threshold {self.box_thresh}")
                 return []
             
             # Convert normalized coordinates to image coordinates
