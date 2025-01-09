@@ -554,14 +554,18 @@ class EmbeddingMaintainer(threading.Thread):
         """Look for license plates in image."""
         id = obj_data["id"]
 
-        # don't run for non car objects
-        if obj_data.get("label") != "car":
-            logger.debug("Not a processing license plate for non car object.")
+        # Get label from object data
+        label = obj_data.get("label")
+
+        # Check if object is a vehicle type we want to process
+        vehicle_types = ["car", "truck", "motorcycle", "bus"]  # Could move this to config
+        if label not in vehicle_types:
+            logger.debug(f"Not processing license plate for non-vehicle object: {label}")
             return False
 
-        # don't run for stationary car objects
+        # don't run for stationary vehicle objects
         if obj_data.get("stationary") == True:
-            logger.debug("Not a processing license plate for a stationary car object.")
+            logger.debug(f"Not processing license plate for stationary {label}.")
             return False
 
         # don't overwrite sub label for objects that have a sub label

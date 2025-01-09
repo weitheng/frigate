@@ -137,15 +137,15 @@ class Embeddings:
 
         if self.config.lpr.enabled:
             self.lpr_detection_model = GenericONNXEmbedding(
-                model_name="paddleocr-onnx",
-                model_file="detection.onnx",
+                model_name="license-plate-detector",
+                model_file="license_plate_yolonas_s.onnx",
                 download_urls={
-                    "detection.onnx": "https://github.com/hawkeye217/paddleocr-onnx/raw/refs/heads/master/models/detection.onnx"
+                    "license_plate_yolonas_s.onnx": "https://github.com/weitheng/License-Plate-Fine-Tune-YoloNas/releases/download/v0.0.1/license_plate_yolonas_s.onnx"
                 },
                 model_size="large",
                 model_type=ModelTypeEnum.lpr_detect,
                 requestor=self.requestor,
-                device="CPU",
+                device="GPU" if config.semantic_search.model_size == "large" else "CPU",
             )
 
             self.lpr_classification_model = GenericONNXEmbedding(

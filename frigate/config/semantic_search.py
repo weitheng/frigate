@@ -56,3 +56,7 @@ class LicensePlateRecognitionConfig(FrigateBaseModel):
     known_plates: Optional[Dict[str, List[str]]] = Field(
         default={}, title="Known plates to track."
     )
+    vehicle_types: List[str] = Field(
+        default=["car", "truck", "motorcycle", "bus"],
+        title="Vehicle types to run license plate detection on."
+    )

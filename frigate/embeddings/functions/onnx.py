@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import requests
 from PIL import Image
+import cv2
 
 # importing this without pytorch or others causes a warning
 # https://github.com/huggingface/transformers/issues/27214
@@ -224,9 +225,23 @@ class GenericONNXEmbedding:
             return [{"input_2": frame}]
         elif self.model_type == ModelTypeEnum.lpr_detect:
             preprocessed = []
-            for x in raw_inputs:
-                preprocessed.append(x)
-            return [{"x": preprocessed[0]}]
+            for img in raw_inputs:
+                # Convert to RGB if needed
+                if isinstance(img, (str, bytes)):
+                    img = self._process_image(img)
+                
+                # Resize to 320x320
+                img = cv2.resize(img, (320, 320))
+                
+                # Convert to float32 and normalize to [0,1]
+                img = img.astype(np.float32) / 255.0
+                
+                # YOLO-NAS expects NCHW format (batch_size, channels, height, width)
+                img = np.transpose(img, (2, 0, 1))[np.newaxis, ...]
+                
+                preprocessed.append({"images": img})  # YOLO-NAS uses "images" as input name
+                
+            return preprocessed
         elif self.model_type == ModelTypeEnum.lpr_classify:
             processed = []
             for img in raw_inputs:

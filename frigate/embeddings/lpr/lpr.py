@@ -35,9 +35,8 @@ class LicensePlateRecognition:
 
         # Detection specific parameters
         self.min_size = 3
-        self.max_size = 960
-        self.box_thresh = 0.8
-        self.mask_thresh = 0.8
+        self.box_thresh = 0.5
+        self.mask_thresh = 0.5
 
         if self.lpr_config.enabled:
             # all models need to be loaded to run LPR
@@ -47,27 +46,45 @@ class LicensePlateRecognition:
 
     def detect(self, image: np.ndarray) -> List[np.ndarray]:
         """
-        Detect possible license plates in the input image by first resizing and normalizing it,
-        running a detection model, and filtering out low-probability regions.
-
+        Detect possible license plates in the input image using YOLO-NAS model.
+        
         Args:
             image (np.ndarray): The input image in which license plates will be detected.
-
+            
         Returns:
             List[np.ndarray]: A list of bounding box coordinates representing detected license plates.
         """
+        # Convert image to RGB if needed
+        if len(image.shape) == 2:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        elif image.shape[2] == 4:
+            image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGB)
+        elif image.shape[2] == 3 and image.dtype == np.uint8:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
         h, w = image.shape[:2]
-
-        if sum([h, w]) < 64:
-            image = self.zero_pad(image)
-
-        resized_image = self.resize_image(image)
-        normalized_image = self.normalize_image(resized_image)
-
-        outputs = self.detection_model([normalized_image])[0]
-        outputs = outputs[0, :, :]
-
-        boxes, _ = self.boxes_from_bitmap(outputs, outputs > self.mask_thresh, w, h)
+        
+        # Run detection model
+        outputs = self.detection_model([image])[0]
+        
+        # YOLO-NAS output format is [num_detections, 7]
+        # where 7 = [x1, y1, x2, y2, score, class_id, num_classes]
+        detections = outputs[outputs[:, 4] > self.box_thresh]
+        
+        # Convert normalized coordinates to image coordinates
+        boxes = []
+        for det in detections:
+            x1, y1, x2, y2 = det[:4]
+            # Convert normalized coordinates to absolute coordinates
+            x1 = int(x1 * w)
+            y1 = int(y1 * h) 
+            x2 = int(x2 * w)
+            y2 = int(y2 * h)
+            
+            # Create polygon points for consistency with existing code
+            box = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
+            boxes.append(box)
+        
         return self.filter_polygon(boxes, (h, w))
 
     def classify(
@@ -157,11 +174,15 @@ class LicensePlateRecognition:
             logger.debug("Model runners not loaded")
             return [], [], []
 
+        # Detect license plates
         plate_points = self.detect(image)
         if len(plate_points) == 0:
             return [], [], []
 
+        # Sort detected plates
         plate_points = self.sort_polygon(list(plate_points))
+        
+        # Extract and process each detected plate
         plate_images = [self._crop_license_plate(image, x) for x in plate_points]
         rotated_images, _ = self.classify(plate_images)
 
