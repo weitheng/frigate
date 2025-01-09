@@ -69,14 +69,21 @@ class LicensePlateRecognition:
             logger.debug(f"Input image shape: {image.shape}, dtype: {image.dtype}")
             
             # Run detection model
+            logger.warn("Running detection model...")
             model_output = self.detection_model([image])
+            logger.warn(f"Raw model output: {type(model_output)}, len: {len(model_output) if model_output else 0}")
             
             # Check if model_output is empty or None
             if not model_output or len(model_output) == 0:
-                logger.warn("Model returned no output")
+                logger.warn("Model returned no output - detection failed")
                 return []
             
             predictions = model_output[0]
+            logger.warn(f"Predictions shape: {predictions.shape if predictions is not None else 'None'}")
+            
+            # Handle single detection case - reshape to 2D array
+            if len(predictions.shape) == 1:
+                predictions = predictions.reshape(1, -1)
             
             if predictions is None or predictions.size == 0:
                 logger.debug("No detections found")
