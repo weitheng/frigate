@@ -142,7 +142,7 @@ class Embeddings:
                 download_urls={
                     "license_plate_yolonas_s.onnx": "https://github.com/weitheng/License-Plate-Fine-Tune-YoloNas/releases/download/v0.0.1/license_plate_yolonas_s.onnx"
                 },
-                model_size="large",
+                model_size="small",
                 model_type=ModelTypeEnum.lpr_detect,
                 requestor=self.requestor,
                 device="GPU" if config.semantic_search.model_size == "large" else "CPU",
