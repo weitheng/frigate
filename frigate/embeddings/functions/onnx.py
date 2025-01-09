@@ -237,20 +237,20 @@ class GenericONNXEmbedding:
                 # Resize to 320x320
                 img = cv2.resize(img, (320, 320))
                 
-                # Ensure uint8 type (0-255)
+                # Ensure uint8 type (0-255) - this matches model's expected input type
                 img = img.astype(np.uint8)
                 
                 # Add debug logging
                 logger.debug(f"Preprocessed image shape: {img.shape}, dtype: {img.dtype}")
                 
-                # YOLO-NAS expects NCHW format (batch_size, channels, height, width)
+                # YOLO-NAS expects NCHW format [1,3,320,320]
                 if len(img.shape) == 3:  # HWC format
                     img = np.transpose(img, (2, 0, 1))  # Convert to CHW
                 img = np.expand_dims(img, axis=0)  # Add batch dimension -> NCHW
                 
                 logger.debug(f"Final input tensor shape: {img.shape}, dtype: {img.dtype}")
                 
-                # Use "input" as the input name to match model expectations
+                # Use "input" as the input name to match model's expected input name
                 preprocessed.append({"input": img})
             
             return preprocessed
@@ -281,28 +281,29 @@ class GenericONNXEmbedding:
         self, inputs: Union[List[str], List[Image.Image], List[str]]
     ) -> List[np.ndarray]:
         self._load_model_and_utils()
-        if self.runner is None or (
-            self.tokenizer is None and self.feature_extractor is None
-        ):
-            logger.error(
-                f"{self.model_name} model or tokenizer/feature extractor is not loaded."
-            )
+        if self.runner is None:
+            logger.error(f"{self.model_name} model runner is None")
             return []
 
         processed_inputs = self._preprocess_inputs(inputs)
         input_names = self.runner.get_input_names()
+        logger.error(f"Model expects input names: {input_names}")
+        
         onnx_inputs = {name: [] for name in input_names}
         input: dict[str, any]
         for input in processed_inputs:
+            logger.error(f"Processed input keys: {input.keys()}")
             for key, value in input.items():
                 if key in input_names:
                     onnx_inputs[key].append(value[0])
+                else:
+                    logger.warning(f"Input key '{key}' not found in model input names {input_names}")
 
         for key in input_names:
             if onnx_inputs.get(key):
                 onnx_inputs[key] = np.stack(onnx_inputs[key])
             else:
-                logger.warning(f"Expected input '{key}' not found in onnx_inputs")
+                logger.error(f"Required input '{key}' has no data")
 
         embeddings = self.runner.run(onnx_inputs)[0]
         return [embedding for embedding in embeddings]

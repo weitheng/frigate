@@ -49,6 +49,17 @@ class LicensePlateRecognition:
         """
         Detect possible license plates in the input image using YOLO-NAS model.
         """
+        # Check if model is loaded
+        if self.detection_model.runner is None:
+            logger.error("License plate detection model is not loaded")
+            return []
+        
+        # Check model input/output info
+        input_names = self.detection_model.runner.get_input_names()
+        output_names = self.detection_model.runner.get_output_names()
+        logger.error(f"Model input names: {input_names}")
+        logger.error(f"Model output names: {output_names}")
+        
         # Convert image to RGB if needed
         if len(image.shape) == 2:
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
@@ -60,37 +71,22 @@ class LicensePlateRecognition:
         h, w = image.shape[:2]
         
         # Add debug logging
-        logger.debug(f"Input image shape: {image.shape}, dtype: {image.dtype}")
+        logger.error(f"Input image shape: {image.shape}, dtype: {image.dtype}")
         
         try:
             # Run detection model
             model_output = self.detection_model([image])
             
-            # Add debug logging for model output
-            logger.debug(f"Model output type: {type(model_output)}")
-            logger.debug(f"Model output: {model_output}")
+            # Model output is [num_predictions, 7] where each prediction is:
+            # [x1, y1, x2, y2, confidence, class_id, num_classes]
+            predictions = model_output[0]  # Get the predictions array
             
-            # Check if we got any output
-            if not model_output:
-                logger.warning("Model output is None or empty")
+            if predictions.size == 0:
+                logger.debug("No detections found")
                 return []
             
-            # Get the output array
-            outputs = model_output[0]
-            logger.debug(f"Output shape: {outputs.shape}, dtype: {outputs.dtype}")
-            
-            # Handle empty detections
-            if outputs.size == 0:
-                logger.warning("No detections in output")
-                return []
-            
-            # Handle single detection case (1D array)
-            if len(outputs.shape) == 1:
-                # Single detection - reshape to [1, 7]
-                outputs = np.expand_dims(outputs, 0)
-            
-            # Filter by confidence threshold (index 4 is confidence score)
-            valid_detections = outputs[outputs[:, 4] > self.box_thresh]
+            # Filter by confidence threshold
+            valid_detections = predictions[predictions[:, 4] > self.box_thresh]
             
             # Convert normalized coordinates to image coordinates
             boxes = []
@@ -102,7 +98,7 @@ class LicensePlateRecognition:
                 x2 = int(x2 * w)
                 y2 = int(y2 * h)
                 
-                # Create polygon points for consistency with existing code
+                # Create polygon points
                 box = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
                 boxes.append(box)
             
@@ -110,7 +106,7 @@ class LicensePlateRecognition:
             
         except Exception as e:
             logger.error(f"Error in license plate detection: {e}")
-            logger.error(f"Model output: {model_output}")
+            logger.error(f"Model output shape: {model_output[0].shape if model_output else 'None'}")
             return []
 
     def classify(

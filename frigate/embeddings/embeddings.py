@@ -136,6 +136,29 @@ class Embeddings:
         self.lpr_recognition_model = None
 
         if self.config.lpr.enabled:
+            model_path = os.path.join(MODEL_CACHE_DIR, "license_plate_yolonas_s.onnx")
+            if os.path.exists(model_path):
+                logger.error(f"License plate model exists at {model_path}")
+                # Check file size
+                size = os.path.getsize(model_path)
+                logger.error(f"Model file size: {size} bytes")
+                
+                # Try to load model to verify it's valid
+                try:
+                    import onnxruntime as ort
+                    sess = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+                    inputs = sess.get_inputs()
+                    outputs = sess.get_outputs()
+                    logger.error(f"Model loaded successfully")
+                    logger.error(f"Model inputs: {[x.name for x in inputs]}")
+                    logger.error(f"Input shapes: {[x.shape for x in inputs]}")
+                    logger.error(f"Input types: {[x.type for x in inputs]}")
+                    logger.error(f"Model outputs: {[x.name for x in outputs]}")
+                except Exception as e:
+                    logger.error(f"Failed to load model: {e}")
+            else:
+                logger.error("License plate model file not found")
+
             self.lpr_detection_model = GenericONNXEmbedding(
                 model_name="license-plate-detector",
                 model_file="license_plate_yolonas_s.onnx",
