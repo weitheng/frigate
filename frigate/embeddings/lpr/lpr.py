@@ -35,8 +35,9 @@ class LicensePlateRecognition:
 
         # Detection specific parameters
         self.min_size = 3
-        self.box_thresh = 0.5
-        self.mask_thresh = 0.5
+        self.max_size = 960
+        self.box_thresh = 0.8
+        self.mask_thresh = 0.8
 
         if self.lpr_config.enabled:
             # all models need to be loaded to run LPR
@@ -65,15 +66,25 @@ class LicensePlateRecognition:
         h, w = image.shape[:2]
         
         # Run detection model
-        outputs = self.detection_model([image])[0]
+        model_output = self.detection_model([image])
         
-        # YOLO-NAS output format is [num_detections, 7]
-        # where 7 = [x1, y1, x2, y2, score, class_id, num_classes]
-        detections = outputs[outputs[:, 4] > self.box_thresh]
+        # Get the output tensor - model returns a list of outputs
+        outputs = model_output[0]  # First output tensor is the detections
+        
+        # Reshape if needed - YOLO-NAS output might need reshaping
+        if len(outputs.shape) == 2:  # If shape is [num_detections, 6]
+            outputs = np.expand_dims(outputs, 0)  # Make it [1, num_detections, 6]
+        
+        # Filter by confidence threshold
+        # Use proper indexing based on output shape
+        if len(outputs.shape) == 3:  # [batch, num_detections, 6]
+            valid_detections = outputs[0][outputs[0, :, 4] > self.box_thresh]
+        else:  # [num_detections, 6]
+            valid_detections = outputs[outputs[:, 4] > self.box_thresh]
         
         # Convert normalized coordinates to image coordinates
         boxes = []
-        for det in detections:
+        for det in valid_detections:
             x1, y1, x2, y2 = det[:4]
             # Convert normalized coordinates to absolute coordinates
             x1 = int(x1 * w)

@@ -230,6 +230,10 @@ class GenericONNXEmbedding:
                 if isinstance(img, (str, bytes)):
                     img = self._process_image(img)
                 
+                # Convert BGR to RGB if needed
+                if len(img.shape) == 3 and img.shape[2] == 3:
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                
                 # Resize to 320x320
                 img = cv2.resize(img, (320, 320))
                 
@@ -237,9 +241,11 @@ class GenericONNXEmbedding:
                 img = img.astype(np.float32) / 255.0
                 
                 # YOLO-NAS expects NCHW format (batch_size, channels, height, width)
-                img = np.transpose(img, (2, 0, 1))[np.newaxis, ...]
+                if len(img.shape) == 3:  # HWC format
+                    img = np.transpose(img, (2, 0, 1))  # Convert to CHW
+                img = np.expand_dims(img, axis=0)  # Add batch dimension -> NCHW
                 
-                preprocessed.append({"images": img})  # YOLO-NAS uses "images" as input name
+                preprocessed.append({"images": img})
                 
             return preprocessed
         elif self.model_type == ModelTypeEnum.lpr_classify:
