@@ -145,7 +145,7 @@ class Embeddings:
                 model_size="large",
                 model_type=ModelTypeEnum.lpr_detect,
                 requestor=self.requestor,
-                device="GPU",
+                device="CPU",
             )
 
             self.lpr_classification_model = GenericONNXEmbedding(
@@ -157,7 +157,7 @@ class Embeddings:
                 model_size="large",
                 model_type=ModelTypeEnum.lpr_classify,
                 requestor=self.requestor,
-                device="GPU",
+                device="CPU",
             )
 
             self.lpr_recognition_model = GenericONNXEmbedding(
@@ -169,7 +169,7 @@ class Embeddings:
                 model_size="large",
                 model_type=ModelTypeEnum.lpr_recognize,
                 requestor=self.requestor,
-                device="GPU",
+                device="CPU",
             )
 
     def embed_thumbnail(
