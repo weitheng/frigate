@@ -70,14 +70,24 @@ class LicensePlateRecognition:
             
             # Run detection model
             model_output = self.detection_model([image])
+            
+            # Check if model_output is empty or None
+            if not model_output or len(model_output) == 0:
+                logger.warn("Model returned no output")
+                return []
+            
             predictions = model_output[0]
             
-            if predictions.size == 0:
+            if predictions is None or predictions.size == 0:
                 logger.debug("No detections found")
                 return []
             
             # Filter by confidence threshold
             valid_detections = predictions[predictions[:, 4] > self.box_thresh]
+            
+            if len(valid_detections) == 0:
+                logger.warn("No detections above confidence threshold")
+                return []
             
             # Convert normalized coordinates to image coordinates
             boxes = []
@@ -108,10 +118,11 @@ class LicensePlateRecognition:
                 
                 boxes.append(box)
             
-            return self.filter_polygon(boxes, (h, w))
+            return boxes
             
         except Exception as e:
             logger.error(f"Error in detection: {e}")
+            logger.warn(f"Model output shape: {model_output[0].shape if model_output else 'None'}")
             return []
 
     def classify(
