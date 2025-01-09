@@ -68,8 +68,17 @@ class LicensePlateRecognition:
         # Run detection model
         model_output = self.detection_model([image])
         
-        # Get the output tensor - model returns a list of outputs
+        # Check if we got any output
+        if not model_output or len(model_output) == 0:
+            logger.warning("No output from license plate detection model")
+            return []
+        
+        # Get detections from output
         outputs = model_output[0]  # First output tensor is the detections
+        
+        # Handle empty detections
+        if outputs.size == 0:
+            return []
         
         # Reshape if needed - YOLO-NAS output might need reshaping
         if len(outputs.shape) == 2:  # If shape is [num_detections, 6]
@@ -77,26 +86,32 @@ class LicensePlateRecognition:
         
         # Filter by confidence threshold
         # Use proper indexing based on output shape
-        if len(outputs.shape) == 3:  # [batch, num_detections, 6]
-            valid_detections = outputs[0][outputs[0, :, 4] > self.box_thresh]
-        else:  # [num_detections, 6]
-            valid_detections = outputs[outputs[:, 4] > self.box_thresh]
-        
-        # Convert normalized coordinates to image coordinates
-        boxes = []
-        for det in valid_detections:
-            x1, y1, x2, y2 = det[:4]
-            # Convert normalized coordinates to absolute coordinates
-            x1 = int(x1 * w)
-            y1 = int(y1 * h) 
-            x2 = int(x2 * w)
-            y2 = int(y2 * h)
+        try:
+            if len(outputs.shape) == 3:  # [batch, num_detections, 6]
+                valid_detections = outputs[0][outputs[0, :, 4] > self.box_thresh]
+            else:  # [num_detections, 6]
+                valid_detections = outputs[outputs[:, 4] > self.box_thresh]
             
-            # Create polygon points for consistency with existing code
-            box = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
-            boxes.append(box)
-        
-        return self.filter_polygon(boxes, (h, w))
+            # Convert normalized coordinates to image coordinates
+            boxes = []
+            for det in valid_detections:
+                x1, y1, x2, y2 = det[:4]
+                # Convert normalized coordinates to absolute coordinates
+                x1 = int(x1 * w)
+                y1 = int(y1 * h) 
+                x2 = int(x2 * w)
+                y2 = int(y2 * h)
+                
+                # Create polygon points for consistency with existing code
+                box = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
+                boxes.append(box)
+            
+            return self.filter_polygon(boxes, (h, w))
+            
+        except Exception as e:
+            logger.error(f"Error processing license plate detections: {e}")
+            logger.error(f"Output shape: {outputs.shape}, Output: {outputs}")
+            return []
 
     def classify(
         self, images: List[np.ndarray]
