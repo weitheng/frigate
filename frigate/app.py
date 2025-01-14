@@ -39,9 +39,9 @@ from frigate.const import (
     RECORD_DIR,
     SHM_FRAMES_VAR,
 )
+from frigate.data_processing.types import DataProcessorMetrics
 from frigate.db.sqlitevecq import SqliteVecQueueDatabase
 from frigate.embeddings import EmbeddingsContext, manage_embeddings
-from frigate.embeddings.types import EmbeddingsMetrics
 from frigate.events.audio import AudioProcessor
 from frigate.events.cleanup import EventCleanup
 from frigate.events.external import ExternalEventProcessor
@@ -90,8 +90,8 @@ class FrigateApp:
         self.detection_shms: list[mp.shared_memory.SharedMemory] = []
         self.log_queue: Queue = mp.Queue()
         self.camera_metrics: dict[str, CameraMetrics] = {}
-        self.embeddings_metrics: EmbeddingsMetrics | None = (
-            EmbeddingsMetrics() if config.semantic_search.enabled else None
+        self.embeddings_metrics: DataProcessorMetrics | None = (
+            DataProcessorMetrics() if config.semantic_search.enabled else None
         )
         self.ptz_metrics: dict[str, PTZMetrics] = {}
         self.processes: dict[str, int] = {}

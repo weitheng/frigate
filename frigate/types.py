@@ -2,13 +2,13 @@ from enum import Enum
 from typing import TypedDict
 
 from frigate.camera import CameraMetrics
-from frigate.embeddings.types import EmbeddingsMetrics
+from frigate.data_processing.types import DataProcessorMetrics
 from frigate.object_detection import ObjectDetectProcess
 
 
 class StatsTrackingTypes(TypedDict):
     camera_metrics: dict[str, CameraMetrics]
-    embeddings_metrics: EmbeddingsMetrics | None
+    embeddings_metrics: DataProcessorMetrics | None
     detectors: dict[str, ObjectDetectProcess]
     started: int
     latest_frigate_version: str

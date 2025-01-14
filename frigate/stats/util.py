@@ -14,7 +14,7 @@ from requests.exceptions import RequestException
 from frigate.camera import CameraMetrics
 from frigate.config import FrigateConfig
 from frigate.const import CACHE_DIR, CLIPS_DIR, RECORD_DIR
-from frigate.embeddings.types import EmbeddingsMetrics
+from frigate.data_processing.types import DataProcessorMetrics
 from frigate.object_detection import ObjectDetectProcess
 from frigate.types import StatsTrackingTypes
 from frigate.util.services import (
@@ -52,7 +52,7 @@ def get_latest_version(config: FrigateConfig) -> str:
 def stats_init(
     config: FrigateConfig,
     camera_metrics: dict[str, CameraMetrics],
-    embeddings_metrics: EmbeddingsMetrics | None,
+    embeddings_metrics: DataProcessorMetrics | None,
     detectors: dict[str, ObjectDetectProcess],
     processes: dict[str, int],
 ) -> StatsTrackingTypes:
