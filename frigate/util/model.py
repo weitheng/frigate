@@ -9,7 +9,7 @@ import numpy as np
 import onnxruntime as ort
 from playhouse.sqliteq import SqliteQueueDatabase
 
-from frigate.config.semantic_search import FaceRecognitionConfig
+from frigate.config.classification import FaceRecognitionConfig
 from frigate.const import MODEL_CACHE_DIR
 
 try:
