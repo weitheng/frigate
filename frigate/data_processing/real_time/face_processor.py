@@ -5,8 +5,8 @@ import datetime
 import logging
 import os
 import random
-import string
 import shutil
+import string
 from typing import Optional
 
 import cv2
@@ -37,7 +37,7 @@ class FaceProcessor(RealTimeProcessorApi):
         self.face_config = config.face_recognition
         self.face_detector: cv2.FaceDetectorYN = None
         self.landmark_detector: cv2.face.FacemarkLBF = None
-        self.face_recognizer: cv2.face.LBPHFaceRecognizer = None
+        self.recognizer: cv2.face.LBPHFaceRecognizer = None
         self.requires_face_detection = "face" not in self.config.objects.all_objects
         self.detected_faces: dict[str, float] = {}
 
@@ -117,6 +117,9 @@ class FaceProcessor(RealTimeProcessorApi):
                 img = self.__align_face(img, img.shape[1], img.shape[0])
                 faces.append(img)
                 labels.append(idx)
+
+        if not faces:
+            return
 
         self.recognizer: cv2.face.LBPHFaceRecognizer = (
             cv2.face.LBPHFaceRecognizer_create(
@@ -216,8 +219,11 @@ class FaceProcessor(RealTimeProcessorApi):
         if not self.landmark_detector:
             return None
 
-        if not self.label_map:
+        if not self.recognizer:
             self.__build_classifier()
+
+            if not self.recognizer:
+                return None
 
         img = cv2.cvtColor(face_image, cv2.COLOR_BGR2GRAY)
         img = self.__align_face(img, img.shape[1], img.shape[0])
@@ -369,7 +375,7 @@ class FaceProcessor(RealTimeProcessorApi):
                     "message": "Invalid face name",
                     "success": False,
                 }
-            
+
             try:
                 rand_id = "".join(
                     random.choices(string.ascii_lowercase + string.digits, k=6)
@@ -407,6 +413,40 @@ class FaceProcessor(RealTimeProcessorApi):
                 with open(file, "wb") as output:
                     output.write(thumbnail.tobytes())
 
+            self.__clear_classifier()
+            return {
+                "message": "Successfully registered face.",
+                "success": True,
+            }
+        elif topic == EmbeddingsRequestEnum.reprocess_face.value:
+            current_file: str = request_data["image_file"]
+            id = current_file[0 : current_file.index("-", current_file.index("-") + 1)]
+            face_score = current_file[current_file.rfind("-") : current_file.rfind(".")]
+            img = None
+
+            if current_file:
+                img = cv2.imread(current_file)
+
+            if img is None:
+                return {
+                    "message": "Invalid image file.",
+                    "success": False,
+                }
+
+            res = self.__classify_face(img)
+
+            if not res:
+                return
+
+            sub_label, score = res
+
+            if self.config.face_recognition.save_attempts:
+                # write face to library
+                folder = os.path.join(FACE_DIR, "train")
+                new_file = os.path.join(
+                    folder, f"{id}-{sub_label}-{score}-{face_score}.webp"
+                )
+                shutil.move(current_file, new_file)
                 self.__clear_classifier()
                 return {
                     "message": "Successfully registered face.",
