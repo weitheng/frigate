@@ -16,7 +16,7 @@ import requests
 from frigate.comms.embeddings_updater import EmbeddingsRequestEnum
 from frigate.config import FrigateConfig
 from frigate.const import FACE_DIR, FRIGATE_LOCALHOST, MODEL_CACHE_DIR
-from frigate.util.image import area
+from frigate.util.image import area, SharedMemoryFrameManager
 
 from ..types import DataProcessorMetrics
 from .api import RealTimeProcessorApi
@@ -32,7 +32,7 @@ FACE_QUALITY = 100
 
 
 class FaceProcessor(RealTimeProcessorApi):
-    def __init__(self, config: FrigateConfig, metrics: DataProcessorMetrics):
+    def __init__(self, config: FrigateConfig, metrics: DataProcessorMetrics, frame_manager: Optional[SharedMemoryFrameManager] = None):
         super().__init__(config, metrics)
         self.face_config = config.face_recognition
         self.face_detector: cv2.FaceDetectorYN = None
@@ -40,6 +40,7 @@ class FaceProcessor(RealTimeProcessorApi):
         self.recognizer: cv2.face.LBPHFaceRecognizer = None
         self.requires_face_detection = "face" not in self.config.objects.all_objects
         self.detected_faces: dict[str, float] = {}
+        self.frame_manager = frame_manager
 
         download_path = os.path.join(MODEL_CACHE_DIR, "facedet")
         self.model_files = {
@@ -192,28 +193,32 @@ class FaceProcessor(RealTimeProcessorApi):
     def __detect_face(self, input: np.ndarray) -> tuple[int, int, int, int]:
         """Detect faces in input image."""
         if not self.face_detector:
+            logger.warning("Face detector not initialized")
             return None
 
-        self.face_detector.setInputSize((input.shape[1], input.shape[0]))
-        faces = self.face_detector.detect(input)
+        try:
+            self.face_detector.setInputSize((input.shape[1], input.shape[0]))
+            faces = self.face_detector.detect(input)
 
-        if faces is None or faces[1] is None:
+            if faces is None or faces[1] is None:
+                return None
+
+            face = None
+            for _, potential_face in enumerate(faces[1]):
+                raw_bbox = potential_face[0:4].astype(np.uint16)
+                x: int = max(raw_bbox[0], 0)
+                y: int = max(raw_bbox[1], 0)
+                w: int = raw_bbox[2]
+                h: int = raw_bbox[3]
+                bbox = (x, y, x + w, y + h)
+
+                if face is None or area(bbox) > area(face):
+                    face = bbox
+
+            return face
+        except Exception as e:
+            logger.error(f"Error detecting face: {str(e)}")
             return None
-
-        face = None
-
-        for _, potential_face in enumerate(faces[1]):
-            raw_bbox = potential_face[0:4].astype(np.uint16)
-            x: int = max(raw_bbox[0], 0)
-            y: int = max(raw_bbox[1], 0)
-            w: int = raw_bbox[2]
-            h: int = raw_bbox[3]
-            bbox = (x, y, x + w, y + h)
-
-            if face is None or area(bbox) > area(face):
-                face = bbox
-
-        return face
 
     def __classify_face(self, face_image: np.ndarray) -> tuple[str, float] | None:
         if not self.landmark_detector:
@@ -244,10 +249,11 @@ class FaceProcessor(RealTimeProcessorApi):
         """Look for faces in image."""
         start = datetime.datetime.now().timestamp()
         id = obj_data["id"]
+        camera = obj_data.get("camera")
 
         # don't run for non person objects
         if obj_data.get("label") != "person":
-            logger.debug("Not a processing face for non person object.")
+            logger.debug("Not processing face for non person object.")
             return
 
         # don't overwrite sub label for objects that have a sub label
@@ -259,7 +265,9 @@ class FaceProcessor(RealTimeProcessorApi):
             return
 
         face: Optional[dict[str, any]] = None
+        face_box = None
 
+        # First detect face location using detect stream
         if self.requires_face_detection:
             logger.debug("Running manual face detection.")
             person_box = obj_data.get("box")
@@ -275,14 +283,8 @@ class FaceProcessor(RealTimeProcessorApi):
             if not face_box:
                 logger.debug("Detected no faces for person object.")
                 return
-
-            face_frame = person[
-                max(0, face_box[1]) : min(frame.shape[0], face_box[3]),
-                max(0, face_box[0]) : min(frame.shape[1], face_box[2]),
-            ]
-            face_frame = cv2.cvtColor(face_frame, cv2.COLOR_RGB2BGR)
         else:
-            # don't run for object without attributes
+            # Use face attributes from object detector
             if not obj_data.get("current_attributes"):
                 logger.debug("No attributes to parse.")
                 return
@@ -295,19 +297,36 @@ class FaceProcessor(RealTimeProcessorApi):
                 if face is None or attr.get("score", 0.0) > face.get("score", 0.0):
                     face = attr
 
-            # no faces detected in this frame
             if not face:
                 return
 
             face_box = face.get("box")
 
-            # check that face is valid
-            if not face_box or area(face_box) < self.config.face_recognition.min_area:
-                logger.debug(f"Invalid face box {face}")
-                return
-
+        # Now get high quality image from record stream
+        try:
+            # Get frame from record stream using timestamp
+            record_frame = self.__get_record_frame(camera, obj_data.get("timestamp"))
+            
+            if record_frame is not None:
+                # Convert record frame to BGR
+                record_frame = cv2.cvtColor(record_frame, cv2.COLOR_YUV2BGR_I420)
+                
+                # Extract face from record frame using face_box
+                face_frame = record_frame[
+                    max(0, face_box[1]) : min(record_frame.shape[0], face_box[3]),
+                    max(0, face_box[0]) : min(record_frame.shape[1], face_box[2]),
+                ]
+            else:
+                # Fallback to detect stream if record frame not available
+                face_frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_I420)
+                face_frame = face_frame[
+                    max(0, face_box[1]) : min(frame.shape[0], face_box[3]),
+                    max(0, face_box[0]) : min(frame.shape[1], face_box[2]),
+                ]
+        except Exception as e:
+            logger.error(f"Error getting record frame: {e}")
+            # Fallback to detect stream
             face_frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_I420)
-
             face_frame = face_frame[
                 max(0, face_box[1]) : min(frame.shape[0], face_box[3]),
                 max(0, face_box[0]) : min(frame.shape[1], face_box[2]),
@@ -354,7 +373,7 @@ class FaceProcessor(RealTimeProcessorApi):
         resp = requests.post(
             f"{FRIGATE_LOCALHOST}/api/events/{id}/sub_label",
             json={
-                "camera": obj_data.get("camera"),
+                "camera": camera,
                 "subLabel": sub_label,
                 "subLabelScore": score,
             },
@@ -548,3 +567,27 @@ class FaceProcessor(RealTimeProcessorApi):
             self.landmark_detector = None
         if self.recognizer:
             self.recognizer = None
+
+    def __get_record_frame(self, camera: str, timestamp: float) -> Optional[np.ndarray]:
+        """Get the record frame closest to the given timestamp."""
+        if not self.frame_manager:
+            return None
+        
+        try:
+            # Get camera config to get frame shape
+            camera_config = self.config.cameras[camera]
+            
+            # Check if record stream is enabled
+            if not camera_config.record.enabled:
+                logger.debug(f"Record stream not enabled for camera {camera}")
+                return None
+
+            # Get frame from record stream
+            frame = self.frame_manager.get(
+                name=f"{camera}-record",  # Record stream frame name
+                shape=camera_config.frame_shape_yuv  # Frame shape needed for numpy array
+            )
+            return frame
+        except Exception as e:
+            logger.error(f"Error getting record frame: {e}")
+            return None
