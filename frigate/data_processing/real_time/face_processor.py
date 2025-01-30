@@ -283,6 +283,14 @@ class FaceProcessor(RealTimeProcessorApi):
             if not face_box:
                 logger.debug("Detected no faces for person object.")
                 return
+                
+            # Convert face_box coordinates relative to person box
+            face_box = (
+                face_box[0] + left,  # Add person box left offset
+                face_box[1] + top,   # Add person box top offset
+                face_box[2] + left,  # Add person box left offset
+                face_box[3] + top    # Add person box top offset
+            )
         else:
             # Use face attributes from object detector
             if not obj_data.get("current_attributes"):
@@ -308,13 +316,29 @@ class FaceProcessor(RealTimeProcessorApi):
             record_frame = self.__get_record_frame(camera, obj_data.get("timestamp"))
             
             if record_frame is not None:
+                # Get resolution difference between detect and record streams
+                detect_height, detect_width = frame.shape[0] // 3 * 2, frame.shape[1]  # YUV420 format
+                record_height, record_width = record_frame.shape[0] // 3 * 2, record_frame.shape[1]
+                
+                # Calculate scale factors
+                width_scale = record_width / detect_width
+                height_scale = record_height / detect_height
+                
+                # Scale face box coordinates for record stream resolution
+                scaled_face_box = (
+                    int(face_box[0] * width_scale),
+                    int(face_box[1] * height_scale),
+                    int(face_box[2] * width_scale),
+                    int(face_box[3] * height_scale)
+                )
+                
                 # Convert record frame to BGR
                 record_frame = cv2.cvtColor(record_frame, cv2.COLOR_YUV2BGR_I420)
                 
-                # Extract face from record frame using face_box
+                # Extract face using scaled coordinates
                 face_frame = record_frame[
-                    max(0, face_box[1]) : min(record_frame.shape[0], face_box[3]),
-                    max(0, face_box[0]) : min(record_frame.shape[1], face_box[2]),
+                    max(0, scaled_face_box[1]) : min(record_frame.shape[0], scaled_face_box[3]),
+                    max(0, scaled_face_box[0]) : min(record_frame.shape[1], scaled_face_box[2]),
                 ]
             else:
                 # Fallback to detect stream if record frame not available
