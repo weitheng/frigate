@@ -28,6 +28,17 @@ import { toast } from "sonner";
 import useSWR from "swr";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import type { AxiosResponse } from "axios";
+
+interface FaceResponse {
+  message: string;
+  success: boolean;
+}
+
+interface RenameData {
+  oldName: string;
+  newName: string;
+}
 
 export default function FaceLibrary() {
   const { data: config } = useSWR<FrigateConfig>("config");
@@ -88,34 +99,33 @@ export default function FaceLibrary() {
 
       const formData = new FormData();
       formData.append("file", file);
-      axios
-        .post(`faces/${pageToggle}`, formData, {
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
-        })
-        .then((resp) => {
-          if (resp.status == 200) {
-            setUpload(false);
-            refreshFaces();
-            toast.success(
-              "Successfully uploaded image. View the file in the /exports folder.",
-              { position: "top-center" },
-            );
-          }
-        })
-        .catch((error) => {
-          if (error.response?.data?.message) {
-            toast.error(
-              `Failed to upload image: ${error.response.data.message}`,
-              { position: "top-center" },
-            );
-          } else {
-            toast.error(`Failed to upload image: ${error.message}`, {
+      
+      try {
+        axios
+          .post<FaceResponse>(`faces/${pageToggle}`, formData, {
+            headers: {
+              "Content-Type": "multipart/form-data",
+            },
+          })
+          .then((resp: AxiosResponse<FaceResponse>) => {
+            if (resp.status === 200) {
+              setUpload(false);
+              refreshFaces();
+              toast.success(
+                "Successfully uploaded image. View the file in the /exports folder.",
+                { position: "top-center" },
+              );
+            }
+          })
+          .catch((error: AxiosError<FaceResponse>) => {
+            const message = error.response?.data?.message || error.message;
+            toast.error(`Failed to upload image: ${message}`, {
               position: "top-center",
             });
-          }
-        });
+          });
+      } catch (err) {
+        toast.error("Failed to upload image", { position: "top-center" });
+      }
     },
     [pageToggle, refreshFaces],
   );
@@ -160,7 +170,7 @@ export default function FaceLibrary() {
 
   const [renameDialog, setRenameDialog] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
-  const [renameData, setRenameData] = useState<{ oldName: string; newName: string }>({ oldName: '', newName: '' });
+  const [renameData, setRenameData] = useState<RenameData>({ oldName: '', newName: '' });
 
   const renameFace = useCallback(async () => {
     if (!renameData.newName.trim()) {
@@ -258,13 +268,12 @@ export default function FaceLibrary() {
                 {isRenaming ? "Renaming..." : "Rename"}
               </Button>
               <Button
-                variant="destructive"
                 onClick={() => {
                   if (window.confirm(`Are you sure you want to delete ${renameData.oldName}?`)) {
                     deleteFace();
                   }
                 }}
-                className="flex-1 text-destructive-foreground"
+                className="flex-1"
               >
                 Delete Face
               </Button>
@@ -312,7 +321,7 @@ export default function FaceLibrary() {
               {Object.values(faces).map((item) => (
                 <ToggleGroupItem
                   key={item}
-                  className={`flex scroll-mx-10 items-center justify-between gap-2 ${
+                  className={`flex scroll-mx-10 items-center justify-between gap-2 group ${
                     pageToggle == item ? "" : "*:text-muted-foreground"
                   }`}
                   value={item}
@@ -327,7 +336,7 @@ export default function FaceLibrary() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-4 w-4"
+                        className="h-4 w-4 opacity-0 group-hover:opacity-100 transition-opacity"
                         onClick={(e) => {
                           e.stopPropagation();
                           setRenameData({ oldName: item, newName: item });
@@ -350,7 +359,7 @@ export default function FaceLibrary() {
             className="flex gap-2"
             onClick={() => setNewFaceDialog(true)}
           >
-            <LuUserPlus className="size-5" />
+            <LuUserPlus className="size-7 rounded-md p-1 text-secondary-foreground" />
             New Face
           </Button>
           <Button className="flex gap-2" onClick={() => setUpload(true)}>

@@ -186,7 +186,7 @@ class FaceProcessor(RealTimeProcessorApi):
         )
 
     def __clear_classifier(self) -> None:
-        self.face_recognizer = None
+        self.recognizer = None
         self.label_map = {}
 
     def __detect_face(self, input: np.ndarray) -> tuple[int, int, int, int]:
@@ -365,104 +365,169 @@ class FaceProcessor(RealTimeProcessorApi):
 
         self.__update_metrics(datetime.datetime.now().timestamp() - start)
 
-    def handle_request(self, topic, request_data) -> dict[str, any] | None:
-        if topic == EmbeddingsRequestEnum.clear_face_classifier.value:
-            self.__clear_classifier()
-        elif topic == EmbeddingsRequestEnum.register_face.value:
-            face_name = request_data.get("face_name")
-            if not self.__validate_face_name(face_name):
+    def handle_request(self, topic: str, request_data: dict[str, any]) -> dict[str, any] | None:
+        """Handle face recognition related requests."""
+        if not isinstance(topic, str):
+            return {
+                "message": "Invalid topic type",
+                "success": False,
+            }
+        
+        if not isinstance(request_data, dict):
+            return {
+                "message": "Invalid request data type",
+                "success": False,
+            }
+
+        try:
+            logger.debug(f"Processing request topic: {topic}")
+            
+            if topic == EmbeddingsRequestEnum.clear_face_classifier.value:
+                self.__clear_classifier()
+                logger.info(f"Successfully cleared face classifier")
                 return {
-                    "message": "Invalid face name",
-                    "success": False,
+                    "message": "Successfully cleared face classifier",
+                    "success": True,
                 }
+            elif topic == EmbeddingsRequestEnum.register_face.value:
+                face_name = request_data.get("face_name")
+                if not self.__validate_face_name(face_name):
+                    return {
+                        "message": "Invalid face name",
+                        "success": False,
+                    }
 
-            try:
-                rand_id = "".join(
-                    random.choices(string.ascii_lowercase + string.digits, k=6)
-                )
-                id = f"{face_name}-{rand_id}"
-
-                if request_data.get("cropped"):
-                    thumbnail = request_data["image"]
-                else:
-                    img = cv2.imdecode(
-                        np.frombuffer(
-                            base64.b64decode(request_data["image"]), dtype=np.uint8
-                        ),
-                        cv2.IMREAD_COLOR,
+                try:
+                    rand_id = "".join(
+                        random.choices(string.ascii_lowercase + string.digits, k=6)
                     )
-                    face_box = self.__detect_face(img)
+                    id = f"{face_name}-{rand_id}"
 
-                    if not face_box:
+                    if request_data.get("cropped"):
+                        thumbnail = request_data["image"]
+                    else:
+                        img = cv2.imdecode(
+                            np.frombuffer(
+                                base64.b64decode(request_data["image"]), dtype=np.uint8
+                            ),
+                            cv2.IMREAD_COLOR,
+                        )
+                        face_box = self.__detect_face(img)
+
+                        if not face_box:
+                            return {
+                                "message": "No face was detected.",
+                                "success": False,
+                            }
+
+                        face = img[face_box[1] : face_box[3], face_box[0] : face_box[2]]
+                        _, thumbnail = cv2.imencode(
+                            ".webp", face, [int(cv2.IMWRITE_WEBP_QUALITY), FACE_QUALITY]
+                        )
+
+                    # write face to library
+                    folder = os.path.join(FACE_DIR, face_name)
+                    file = os.path.join(folder, f"{id}.webp")
+                    os.makedirs(folder, exist_ok=True)
+                    if not os.access(folder, os.W_OK):
                         return {
-                            "message": "No face was detected.",
-                            "success": False,
+                            "message": f"No write permission for directory: {folder}",
+                            "success": False
                         }
-
-                    face = img[face_box[1] : face_box[3], face_box[0] : face_box[2]]
-                    _, thumbnail = cv2.imencode(
-                        ".webp", face, [int(cv2.IMWRITE_WEBP_QUALITY), FACE_QUALITY]
-                    )
-
-                # write face to library
-                folder = os.path.join(FACE_DIR, face_name)
-                file = os.path.join(folder, f"{id}.webp")
-                os.makedirs(folder, exist_ok=True)
 
                 # save face image
                 with open(file, "wb") as output:
                     output.write(thumbnail.tobytes())
 
-            self.__clear_classifier()
+                    self.__clear_classifier()
+                    logger.info(f"Successfully registered face: {face_name}")
+                    return {
+                        "message": "Successfully registered face.",
+                        "success": True,
+                    }
+                except cv2.error as e:
+                    return {
+                        "message": f"Failed to process image: {str(e)}",
+                        "success": False,
+                    }
+                except Exception as e:
+                    logger.error(f"Unexpected error registering face: {str(e)}")
+                    return {
+                        "message": "Internal server error",
+                        "success": False,
+                    }
+            elif topic == EmbeddingsRequestEnum.reprocess_face.value:
+                current_file: str = request_data["image_file"]
+                id = current_file[0 : current_file.index("-", current_file.index("-") + 1)]
+                face_score = current_file[current_file.rfind("-") : current_file.rfind(".")]
+                img = None
+
+                if current_file:
+                    img = cv2.imread(current_file)
+
+                if img is None:
+                    return {
+                        "message": "Invalid image file.",
+                        "success": False,
+                    }
+
+                if not os.path.exists(current_file):
+                    return {
+                        "message": f"File not found: {current_file}",
+                        "success": False
+                    }
+
+                try:
+                    res = self.__classify_face(img)
+
+                    if not res:
+                        return {
+                            "message": "No face was detected.",
+                            "success": False,
+                        }
+
+                    sub_label, score = res
+
+                    if not self.config.face_recognition.save_attempts:
+                        return {
+                            "message": "Face saving is disabled",
+                            "success": False
+                        }
+
+                    # write face to library
+                    folder = os.path.join(FACE_DIR, "train")
+                    new_file = os.path.join(
+                        folder, f"{id}-{sub_label}-{score}-{face_score}.webp"
+                    )
+                    shutil.move(current_file, new_file)
+                    self.__clear_classifier()
+                    logger.info(f"Successfully reprocessed face: {current_file}")
+                    return {
+                        "message": "Successfully registered face.",
+                        "success": True,
+                    }
+                except cv2.error as e:
+                    return {
+                        "message": f"Failed to process image: {str(e)}",
+                        "success": False,
+                    }
+                except Exception as e:
+                    logger.error(f"Unexpected error registering face: {str(e)}")
+                    return {
+                        "message": "Internal server error",
+                        "success": False,
+                    }
+            else:
+                return {
+                    "message": f"Unknown request topic: {topic}",
+                    "success": False,
+                }
+        except Exception as e:
+            logger.error(f"Unexpected error handling request: {str(e)}")
             return {
-                "message": "Successfully registered face.",
-                "success": True,
+                "message": "Internal server error",
+                "success": False,
             }
-        elif topic == EmbeddingsRequestEnum.reprocess_face.value:
-            current_file: str = request_data["image_file"]
-            id = current_file[0 : current_file.index("-", current_file.index("-") + 1)]
-            face_score = current_file[current_file.rfind("-") : current_file.rfind(".")]
-            img = None
-
-            if current_file:
-                img = cv2.imread(current_file)
-
-            if img is None:
-                return {
-                    "message": "Invalid image file.",
-                    "success": False,
-                }
-
-            res = self.__classify_face(img)
-
-            if not res:
-                return
-
-            sub_label, score = res
-
-            if self.config.face_recognition.save_attempts:
-                # write face to library
-                folder = os.path.join(FACE_DIR, "train")
-                new_file = os.path.join(
-                    folder, f"{id}-{sub_label}-{score}-{face_score}.webp"
-                )
-                shutil.move(current_file, new_file)
-                self.__clear_classifier()
-                return {
-                    "message": "Successfully registered face.",
-                    "success": True,
-                }
-            except cv2.error as e:
-                return {
-                    "message": f"Failed to process image: {str(e)}",
-                    "success": False,
-                }
-            except Exception as e:
-                logger.error(f"Unexpected error registering face: {str(e)}")
-                return {
-                    "message": "Internal server error",
-                    "success": False,
-                }
 
     def expire_object(self, object_id: str):
         if object_id in self.detected_faces:
@@ -481,5 +546,5 @@ class FaceProcessor(RealTimeProcessorApi):
             self.face_detector = None
         if self.landmark_detector:
             self.landmark_detector = None
-        if self.face_recognizer:
-            self.face_recognizer = None
+        if self.recognizer:
+            self.recognizer = None
