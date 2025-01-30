@@ -273,7 +273,7 @@ export default function FaceLibrary() {
                     deleteFace();
                   }
                 }}
-                className="flex-1"
+                className="flex-1 bg-red-500 hover:bg-red-600 text-white"
               >
                 Delete Face
               </Button>
@@ -465,7 +465,9 @@ function FaceAttempt({
 
   const onReprocess = useCallback(() => {
     axios
-      .post(`/faces/reprocess`, { training_file: image })
+      .post(`/faces/reprocess`, { 
+        training_file: `train/${image}`
+      })
       .then((resp) => {
         if (resp.status == 200) {
           toast.success(`Successfully trained face.`, {
@@ -560,7 +562,7 @@ function FaceAttempt({
                   onClick={() => onReprocess()}
                 />
               </TooltipTrigger>
-              <TooltipContent>Delete Face Attempt</TooltipContent>
+              <TooltipContent>Reprocess Face</TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger>
@@ -628,6 +630,30 @@ function FaceImage({ name, image, onRefresh }: FaceImageProps) {
       });
   }, [name, image, onRefresh]);
 
+  const onReprocess = useCallback(() => {
+    axios
+      .post(`/faces/train/${name}/classify`, { training_file: image })
+      .then((resp) => {
+        if (resp.status == 200) {
+          toast.success(`Successfully trained face.`, {
+            position: "top-center",
+          });
+          onRefresh();
+        }
+      })
+      .catch((error) => {
+        if (error.response?.data?.message) {
+          toast.error(`Failed to train: ${error.response.data.message}`, {
+            position: "top-center",
+          });
+        } else {
+          toast.error(`Failed to train: ${error.message}`, {
+            position: "top-center",
+          });
+        }
+      });
+  }, [name, image, onRefresh]);
+
   return (
     <div className="relative flex flex-col rounded-lg">
       <div className="w-full overflow-hidden rounded-t-lg border border-t-0 *:text-card-foreground">
@@ -641,12 +667,21 @@ function FaceImage({ name, image, onRefresh }: FaceImageProps) {
           <div className="flex flex-row items-start justify-end gap-5 md:gap-4">
             <Tooltip>
               <TooltipTrigger>
+                <LuRefreshCw
+                  className="size-5 cursor-pointer text-primary-variant hover:text-primary"
+                  onClick={onReprocess}
+                />
+              </TooltipTrigger>
+              <TooltipContent>Reprocess Face</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger>
                 <LuTrash2
                   className="size-5 cursor-pointer text-primary-variant hover:text-primary"
                   onClick={onDelete}
                 />
               </TooltipTrigger>
-              <TooltipContent>Delete Face Attempt</TooltipContent>
+              <TooltipContent>Delete Face</TooltipContent>
             </Tooltip>
           </div>
         </div>
