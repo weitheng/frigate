@@ -87,17 +87,13 @@ def train_face(request: Request, name: str, body: dict = None):
                 content={"message": "Face recognition is not enabled.", "success": False},
             )
 
-        if not name or not name.strip():
-            return JSONResponse(
-                status_code=400,
-                content={"message": "Face name is required", "success": False},
-            )
-
         json: dict[str, any] = body or {}
-        training_file = os.path.join(
-            FACE_DIR, f"train/{sanitize_filename(json.get('training_file', ''))}"
-        )
-
+        file_name = sanitize_filename(json.get('training_file', ''))
+        
+        training_file = os.path.join(FACE_DIR, "train", file_name)
+        if not os.path.isfile(training_file):
+            training_file = os.path.join(FACE_DIR, name, file_name)
+            
         if not training_file or not os.path.isfile(training_file):
             return JSONResponse(
                 content=(
@@ -111,7 +107,7 @@ def train_face(request: Request, name: str, body: dict = None):
 
         rand_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
         new_name = f"{name}-{rand_id}.webp"
-        new_file = os.path.join(FACE_DIR, f"{name}/{new_name}")
+        new_file = os.path.join(FACE_DIR, f"train/{new_name}")
         
         os.makedirs(os.path.dirname(new_file), exist_ok=True)
         shutil.move(training_file, new_file)

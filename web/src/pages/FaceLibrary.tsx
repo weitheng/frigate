@@ -466,7 +466,7 @@ function FaceAttempt({
   const onReprocess = useCallback(() => {
     axios
       .post(`/faces/reprocess`, { 
-        training_file: image  // Just send the filename as is
+        training_file: image
       })
       .then((resp) => {
         if (resp.status == 200) {
