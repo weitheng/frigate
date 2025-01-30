@@ -130,51 +130,51 @@ export default function FaceLibrary() {
     [pageToggle, refreshFaces],
   );
 
-  const [newFaceDialog, setNewFaceDialog] = useState(false);
-  const [isCreatingFace, setIsCreatingFace] = useState(false);
-  const [newFaceName, setNewFaceName] = useState("");
+  const [newPersonDialog, setNewPersonDialog] = useState(false);
+  const [isCreatingPerson, setIsCreatingPerson] = useState(false);
+  const [newPersonName, setNewPersonName] = useState("");
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
-      createNewFace();
+      createNewPerson();
     }
   };
 
-  const createNewFace = useCallback(async () => {
-    if (!newFaceName.trim()) {
-      toast.error("Face name cannot be empty", { position: "top-center" });
+  const createNewPerson = useCallback(async () => {
+    if (!newPersonName.trim()) {
+      toast.error("Person name cannot be empty", { position: "top-center" });
       return;
     }
 
-    setIsCreatingFace(true);
+    setIsCreatingPerson(true);
     try {
-      const resp = await axios.post(`/faces/${newFaceName}/create`);
+      const resp = await axios.post(`/faces/${newPersonName}/create`);
 
       if (resp.status === 200) {
-        setNewFaceDialog(false);
-        setNewFaceName("");
+        setNewPersonDialog(false);
+        setNewPersonName("");
         await refreshFaces();
-        setPageToggle(newFaceName);
-        toast.success("Successfully created new face", { position: "top-center" });
+        setPageToggle(newPersonName);
+        toast.success("Successfully created new person", { position: "top-center" });
       }
     } catch (error) {
       const axiosError = error as AxiosError<{ message: string }>;
       toast.error(
-        `Failed to create face: ${axiosError.response?.data?.message || axiosError.message}`,
+        `Failed to create person: ${axiosError.response?.data?.message || axiosError.message}`,
         { position: "top-center" }
       );
     } finally {
-      setIsCreatingFace(false);
+      setIsCreatingPerson(false);
     }
-  }, [newFaceName, refreshFaces, setPageToggle]);
+  }, [newPersonName, refreshFaces, setPageToggle]);
 
   const [renameDialog, setRenameDialog] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameData, setRenameData] = useState<RenameData>({ oldName: '', newName: '' });
 
-  const renameFace = useCallback(async () => {
+  const renamePerson = useCallback(async () => {
     if (!renameData.newName.trim()) {
-      toast.error("Face name cannot be empty", { position: "top-center" });
+      toast.error("Person name cannot be empty", { position: "top-center" });
       return;
     }
 
@@ -188,11 +188,11 @@ export default function FaceLibrary() {
       setPageToggle(renameData.newName);
       setRenameData({ oldName: '', newName: '' });
       await refreshFaces();
-      toast.success("Successfully renamed face", { position: "top-center" });
+      toast.success("Successfully renamed person", { position: "top-center" });
     } catch (error) {
       const axiosError = error as AxiosError<{ message: string }>;
       toast.error(
-        `Failed to rename face: ${axiosError.response?.data?.message || axiosError.message}`,
+        `Failed to rename person: ${axiosError.response?.data?.message || axiosError.message}`,
         { position: "top-center" }
       );
     } finally {
@@ -200,7 +200,7 @@ export default function FaceLibrary() {
     }
   }, [renameData, refreshFaces, setPageToggle]);
 
-  const deleteFace = useCallback(async () => {
+  const deletePerson = useCallback(async () => {
     try {
       const images = faceData[renameData.oldName] || [];
       await axios.post(`/faces/${renameData.oldName}/delete`, {
@@ -209,14 +209,14 @@ export default function FaceLibrary() {
       });
       setRenameDialog(false);
 
-      const nextFace = faces.find(face => face !== renameData.oldName) || undefined;
-      setPageToggle(nextFace);
+      const nextPerson = faces.find(face => face !== renameData.oldName) || undefined;
+      setPageToggle(nextPerson);
       await refreshFaces();
-      toast.success("Successfully deleted face", { position: "top-center" });
+      toast.success("Successfully deleted person", { position: "top-center" });
     } catch (error) {
       const axiosError = error as AxiosError<{ message: string }>;
       toast.error(
-        `Failed to delete face: ${axiosError.response?.data?.message || axiosError.message}`,
+        `Failed to delete person: ${axiosError.response?.data?.message || axiosError.message}`,
         { position: "top-center" }
       );
     }
@@ -230,21 +230,21 @@ export default function FaceLibrary() {
     <div className="flex size-full flex-col p-2">
       <Toaster />
 
-      <Dialog open={newFaceDialog} onOpenChange={setNewFaceDialog}>
+      <Dialog open={newPersonDialog} onOpenChange={setNewPersonDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Create New Face</DialogTitle>
+            <DialogTitle>Create New Person</DialogTitle>
           </DialogHeader>
           <div className="flex flex-col gap-4">
             <Input
-              placeholder="Enter face name"
-              value={newFaceName}
-              onChange={(e) => setNewFaceName(e.target.value)}
+              placeholder="Enter person name"
+              value={newPersonName}
+              onChange={(e) => setNewPersonName(e.target.value)}
               onKeyPress={handleKeyPress}
-              disabled={isCreatingFace}
+              disabled={isCreatingPerson}
             />
-            <Button onClick={createNewFace} disabled={isCreatingFace}>
-              {isCreatingFace ? "Creating..." : "Create"}
+            <Button onClick={createNewPerson} disabled={isCreatingPerson}>
+              {isCreatingPerson ? "Creating..." : "Create"}
             </Button>
           </div>
         </DialogContent>
@@ -253,29 +253,29 @@ export default function FaceLibrary() {
       <Dialog open={renameDialog} onOpenChange={setRenameDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Rename Face</DialogTitle>
+            <DialogTitle>Rename Person</DialogTitle>
           </DialogHeader>
           <div className="flex flex-col gap-4">
             <Input
               placeholder="Enter new name"
               value={renameData.newName}
               onChange={(e) => setRenameData(prev => ({ ...prev, newName: e.target.value }))}
-              onKeyPress={(e) => e.key === 'Enter' && renameFace()}
+              onKeyPress={(e) => e.key === 'Enter' && renamePerson()}
               disabled={isRenaming}
             />
             <div className="flex gap-2 justify-between">
-              <Button onClick={renameFace} disabled={isRenaming} className="flex-1">
+              <Button onClick={renamePerson} disabled={isRenaming} className="flex-1">
                 {isRenaming ? "Renaming..." : "Rename"}
               </Button>
               <Button
                 onClick={() => {
                   if (window.confirm(`Are you sure you want to delete ${renameData.oldName}?`)) {
-                    deleteFace();
+                    deletePerson();
                   }
                 }}
                 className="flex-1 bg-red-500 hover:bg-red-600 text-white"
               >
-                Delete Face
+                Delete Person
               </Button>
             </div>
           </div>
@@ -346,7 +346,7 @@ export default function FaceLibrary() {
                         <LuPencil className="h-3 w-3" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>Rename Face</TooltipContent>
+                    <TooltipContent>Rename Person</TooltipContent>
                   </Tooltip>
                 </ToggleGroupItem>
               ))}
@@ -357,10 +357,10 @@ export default function FaceLibrary() {
         <div className="flex gap-2">
           <Button
             className="flex gap-2"
-            onClick={() => setNewFaceDialog(true)}
+            onClick={() => setNewPersonDialog(true)}
           >
             <LuUserPlus className="size-7 rounded-md p-1 text-secondary-foreground" />
-            New Face
+            New Person
           </Button>
           <Button className="flex gap-2" onClick={() => setUpload(true)}>
             <LuImagePlus className="size-7 rounded-md p-1 text-secondary-foreground" />

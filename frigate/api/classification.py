@@ -216,24 +216,24 @@ def deregister_faces(request: Request, name: str, body: dict = None):
 
 
 @router.post("/faces/{name}/create")
-def create_face(name: str):
-    """Create a new face directory without requiring an image."""
+def create_person(name: str):
+    """Create a new person directory without requiring an image."""
     folder = os.path.join(FACE_DIR, name)
     if os.path.exists(folder):
         return JSONResponse(
             status_code=400,
-            content={"message": f"Face '{name}' already exists", "success": False},
+            content={"message": f"Person '{name}' already exists", "success": False},
         )
     
     os.makedirs(folder, exist_ok=True)
     return JSONResponse(
         status_code=200,
-        content={"message": "Successfully created face", "success": True},
+        content={"message": "Successfully created person", "success": True},
     )
 
 
 @router.post("/faces/{name}/rename")
-def rename_face(request: Request, name: str, body: dict = None):
+def rename_person(request: Request, name: str, body: dict = None):
     """Rename a face directory."""
     if not request.app.frigate_config.face_recognition.enabled:
         return JSONResponse(
