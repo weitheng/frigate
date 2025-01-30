@@ -464,12 +464,9 @@ function FaceAttempt({
   );
 
   const onReprocess = useCallback(() => {
-    // Remove 'train/' prefix if it exists
-    const fileName = image.startsWith('train/') ? image.substring(6) : image;
-    
     axios
       .post(`/faces/reprocess`, { 
-        training_file: fileName
+        training_file: image  // Just send the filename as is
       })
       .then((resp) => {
         if (resp.status == 200) {
@@ -562,7 +559,7 @@ function FaceAttempt({
               <TooltipTrigger>
                 <LuRefreshCw
                   className="size-5 cursor-pointer text-primary-variant hover:text-primary"
-                  onClick={() => onReprocess()}
+                  onClick={onReprocess}
                 />
               </TooltipTrigger>
               <TooltipContent>Reprocess Face</TooltipContent>
@@ -634,12 +631,10 @@ function FaceImage({ name, image, onRefresh }: FaceImageProps) {
   }, [name, image, onRefresh]);
 
   const onReprocess = useCallback(() => {
-    // Remove 'train/' prefix if it exists
-    const fileName = image.startsWith('train/') ? image.substring(6) : image;
-    
+    // First move to train directory using the train/classify endpoint
     axios
-      .post(`/faces/reprocess`, { 
-        training_file: fileName
+      .post(`/faces/train/${name}/classify`, { 
+        training_file: image  // For named directories, use classify endpoint
       })
       .then((resp) => {
         if (resp.status == 200) {
@@ -660,7 +655,7 @@ function FaceImage({ name, image, onRefresh }: FaceImageProps) {
           });
         }
       });
-  }, [image, onRefresh]);
+  }, [name, image, onRefresh]);
 
   return (
     <div className="relative flex flex-col rounded-lg">
