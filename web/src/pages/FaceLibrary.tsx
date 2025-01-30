@@ -464,9 +464,12 @@ function FaceAttempt({
   );
 
   const onReprocess = useCallback(() => {
+    // Remove 'train/' prefix if it exists
+    const fileName = image.startsWith('train/') ? image.substring(6) : image;
+    
     axios
       .post(`/faces/reprocess`, { 
-        training_file: `train/${image}`
+        training_file: fileName
       })
       .then((resp) => {
         if (resp.status == 200) {
@@ -631,8 +634,13 @@ function FaceImage({ name, image, onRefresh }: FaceImageProps) {
   }, [name, image, onRefresh]);
 
   const onReprocess = useCallback(() => {
+    // Remove 'train/' prefix if it exists
+    const fileName = image.startsWith('train/') ? image.substring(6) : image;
+    
     axios
-      .post(`/faces/train/${name}/classify`, { training_file: image })
+      .post(`/faces/reprocess`, { 
+        training_file: fileName
+      })
       .then((resp) => {
         if (resp.status == 200) {
           toast.success(`Successfully trained face.`, {
@@ -652,7 +660,7 @@ function FaceImage({ name, image, onRefresh }: FaceImageProps) {
           });
         }
       });
-  }, [name, image, onRefresh]);
+  }, [image, onRefresh]);
 
   return (
     <div className="relative flex flex-col rounded-lg">
