@@ -435,9 +435,9 @@ class FaceProcessor(RealTimeProcessorApi):
                             "success": False
                         }
 
-                # save face image
-                with open(file, "wb") as output:
-                    output.write(thumbnail.tobytes())
+                    # save face image
+                    with open(file, "wb") as output:
+                        output.write(thumbnail.tobytes())
 
                     self.__clear_classifier()
                     logger.info(f"Successfully registered face: {face_name}")
