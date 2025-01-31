@@ -6,7 +6,7 @@ import random
 import shutil
 import string
 
-from fastapi import APIRouter, Request, UploadFile, Form
+from fastapi import APIRouter, Request, UploadFile, Body
 from fastapi.responses import JSONResponse
 from pathvalidate import sanitize_filename
 
@@ -139,10 +139,9 @@ def train_face(request: Request, name: str, body: dict = None):
 @router.post("/faces/reprocess")
 async def reclassify_face(
     request: Request,
-    training_file: str = Form(...),
-    face_name: str = Form(...)
+    body: dict = Body(...)
 ):
-    logger.info(f"Received reprocess request - file: {training_file}, face: {face_name}")
+    logger.info(f"Received reprocess request with body: {body}")
     
     if not request.app.frigate_config.face_recognition.enabled:
         return JSONResponse(
@@ -150,7 +149,20 @@ async def reclassify_face(
             content={"message": "Face recognition is not enabled.", "success": False},
         )
 
-    training_file = sanitize_filename(training_file)
+    training_file = sanitize_filename(body.get('training_file', ''))
+    face_name = body.get('face_name')
+
+    if not face_name:
+        return JSONResponse(
+            status_code=422,
+            content={"message": "Face name is required", "success": False},
+        )
+
+    if not training_file:
+        return JSONResponse(
+            status_code=422,
+            content={"message": "Training file is required", "success": False},
+        )
 
     # Check if file exists in train directory
     training_path = os.path.join(FACE_DIR, "train", training_file)
