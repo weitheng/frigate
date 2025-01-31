@@ -7,6 +7,7 @@ import multiprocessing as mp
 import os
 import signal
 import threading
+import shutil
 from types import FrameType
 from typing import Optional, Union
 
@@ -211,10 +212,29 @@ class EmbeddingsContext:
 
         return self.db.execute_sql(sql_query).fetchall()
 
-    def reprocess_face(self, face_file: str) -> dict[str, any]:
-        return self.requestor.send_data(
-            EmbeddingsRequestEnum.reprocess_face.value, {"image_file": face_file}
-        )
+    def reprocess_face(self, face_file: str, face_name: str = None) -> dict[str, any]:
+        """Reprocess a face image to update its classification score."""
+        try:
+            # First move to train directory if needed
+            if face_name and not face_file.startswith(os.path.join(FACE_DIR, "train")):
+                train_path = os.path.join(FACE_DIR, "train", os.path.basename(face_file))
+                shutil.copy2(face_file, train_path)
+                os.remove(face_file)
+                face_file = train_path
+
+            return self.requestor.send_data(
+                EmbeddingsRequestEnum.reprocess_face.value, 
+                {
+                    "image_file": face_file,
+                    "face_name": face_name
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error in reprocess_face: {str(e)}")
+            return {
+                "success": False,
+                "message": f"Failed to reprocess face: {str(e)}"
+            }
 
     def clear_face_classifier(self) -> None:
         self.requestor.send_data(

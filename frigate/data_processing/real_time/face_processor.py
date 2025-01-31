@@ -500,7 +500,7 @@ class FaceProcessor(RealTimeProcessorApi):
                         "success": False,
                     }
             elif topic == EmbeddingsRequestEnum.reprocess_face.value:
-                current_file: str = request_data["training_file"]
+                current_file: str = request_data["image_file"]
                 id = current_file[0 : current_file.index("-", current_file.index("-") + 1)]
                 face_score = current_file[current_file.rfind("-") : current_file.rfind(".")]
                 img = None

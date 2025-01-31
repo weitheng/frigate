@@ -87,13 +87,17 @@ def train_face(request: Request, name: str, body: dict = None):
                 content={"message": "Face recognition is not enabled.", "success": False},
             )
 
+        if not name or not name.strip():
+            return JSONResponse(
+                status_code=400,
+                content={"message": "Face name is required", "success": False},
+            )
+
         json: dict[str, any] = body or {}
-        file_name = sanitize_filename(json.get('training_file', ''))
-        
-        training_file = os.path.join(FACE_DIR, "train", file_name)
-        if not os.path.isfile(training_file):
-            training_file = os.path.join(FACE_DIR, name, file_name)
-            
+        training_file = os.path.join(
+            FACE_DIR, f"train/{sanitize_filename(json.get('training_file', ''))}"
+        )
+
         if not training_file or not os.path.isfile(training_file):
             return JSONResponse(
                 content=(
@@ -107,7 +111,7 @@ def train_face(request: Request, name: str, body: dict = None):
 
         rand_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
         new_name = f"{name}-{rand_id}.webp"
-        new_file = os.path.join(FACE_DIR, f"train/{new_name}")
+        new_file = os.path.join(FACE_DIR, f"{name}/{new_name}")
         
         os.makedirs(os.path.dirname(new_file), exist_ok=True)
         shutil.move(training_file, new_file)
@@ -141,28 +145,52 @@ def reclassify_face(request: Request, body: dict = None):
         )
 
     json: dict[str, any] = body or {}
-    training_file = os.path.join(
-        FACE_DIR, f"train/{sanitize_filename(json.get('training_file', ''))}"
-    )
+    training_file = sanitize_filename(json.get('training_file', ''))
+    face_name = json.get('face_name')
 
-    if not training_file or not os.path.isfile(training_file):
+    if not training_file:
         return JSONResponse(
-            content=(
-                {
-                    "success": False,
-                    "message": f"Invalid filename or no file exists: {training_file}",
-                }
-            ),
-            status_code=404,
+            content={"success": False, "message": "Training file is required"},
+            status_code=400,
         )
 
-    context: EmbeddingsContext = request.app.embeddings
-    response = context.reprocess_face(training_file)
+    # Check if file exists in train directory
+    training_path = os.path.join(FACE_DIR, "train", training_file)
+    if not os.path.isfile(training_path):
+        # Check if file exists in face directory
+        face_path = os.path.join(FACE_DIR, face_name, training_file)
+        if not os.path.isfile(face_path):
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": f"File not found: {training_file}"
+                },
+                status_code=404,
+            )
+        training_path = face_path
 
-    return JSONResponse(
-        content=response,
-        status_code=200,
-    )
+    try:
+        context: EmbeddingsContext = request.app.embeddings
+        
+        # For files in face directories, move to train first
+        if not training_path.startswith(os.path.join(FACE_DIR, "train")):
+            train_path = os.path.join(FACE_DIR, "train", training_file)
+            shutil.copy2(training_path, train_path)
+            os.remove(training_path)
+            training_path = train_path
+
+        response = context.reprocess_face(training_path, face_name)
+
+        return JSONResponse(
+            content=response,
+            status_code=200 if response.get('success', False) else 422,
+        )
+    except Exception as e:
+        logger.error(f"Failed to reprocess face: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"Failed to reprocess face: {str(e)}"},
+        )
 
 
 @router.post("/faces/{name}/delete")
@@ -216,24 +244,24 @@ def deregister_faces(request: Request, name: str, body: dict = None):
 
 
 @router.post("/faces/{name}/create")
-def create_person(name: str):
-    """Create a new person directory without requiring an image."""
+def create_face(name: str):
+    """Create a new face directory without requiring an image."""
     folder = os.path.join(FACE_DIR, name)
     if os.path.exists(folder):
         return JSONResponse(
             status_code=400,
-            content={"message": f"Person '{name}' already exists", "success": False},
+            content={"message": f"Face '{name}' already exists", "success": False},
         )
     
     os.makedirs(folder, exist_ok=True)
     return JSONResponse(
         status_code=200,
-        content={"message": "Successfully created person", "success": True},
+        content={"message": "Successfully created face", "success": True},
     )
 
 
 @router.post("/faces/{name}/rename")
-def rename_person(request: Request, name: str, body: dict = None):
+def rename_face(request: Request, name: str, body: dict = None):
     """Rename a face directory."""
     if not request.app.frigate_config.face_recognition.enabled:
         return JSONResponse(
