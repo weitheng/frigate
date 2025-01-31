@@ -470,7 +470,7 @@ function FaceAttempt({
         face_name: data.name
       })
       .then((resp) => {
-        if (resp.status == 200) {
+        if (resp.status === 200) {
           toast.success(`Successfully trained face.`, {
             position: "top-center",
           });

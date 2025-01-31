@@ -501,8 +501,18 @@ class FaceProcessor(RealTimeProcessorApi):
                     }
             elif topic == EmbeddingsRequestEnum.reprocess_face.value:
                 current_file: str = request_data["image_file"]
-                id = current_file[0 : current_file.index("-", current_file.index("-") + 1)]
-                face_score = current_file[current_file.rfind("-") : current_file.rfind(".")]
+                logger.info(f"Reprocessing face: {current_file}")
+                
+                try:
+                    id = current_file[0 : current_file.index("-", current_file.index("-") + 1)]
+                    face_score = current_file[current_file.rfind("-") : current_file.rfind(".")]
+                except Exception as e:
+                    logger.error(f"Error parsing filename {current_file}: {e}")
+                    return {
+                        "message": f"Invalid filename format: {current_file}",
+                        "success": False
+                    }
+
                 img = None
 
                 if current_file:
