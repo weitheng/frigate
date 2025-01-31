@@ -464,24 +464,31 @@ function FaceAttempt({
   );
 
   const onReprocess = useCallback(() => {
+    const formData = new FormData();
+    formData.append('training_file', image);
+    formData.append('face_name', data.name);
+
     axios
-      .post(`/faces/reprocess`, { 
-        training_file: image,
-        face_name: data.name
+      .post('/faces/reprocess', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        }
       })
       .then((resp) => {
         if (resp.status === 200) {
-          toast.success(`Successfully trained face.`, {
+          toast.success(`Successfully reprocessed face.`, {
             position: "top-center",
           });
           onRefresh();
         }
       })
       .catch((error: AxiosError<{message: string}>) => {
+        console.error('Reprocess error:', error.response?.data);
+        
         const errorMessage = error.response?.data?.message 
           ? error.response.data.message
           : error.message;
-        toast.error(`Failed to train: ${errorMessage}`, {
+        toast.error(`Failed to reprocess: ${errorMessage}`, {
           position: "top-center",
         });
       });
@@ -604,6 +611,16 @@ type FaceImageProps = {
   onRefresh: () => void;
 };
 function FaceImage({ name, image, onRefresh }: FaceImageProps) {
+  const data = useMemo(() => {
+    const parts = image.split("-");
+
+    return {
+      eventId: `${parts[0]}-${parts[1]}`,
+      name: parts[2],
+      score: parts[3],
+    };
+  }, [image]);
+
   const onDelete = useCallback(() => {
     axios
       .post(`/faces/${name}/delete`, { ids: [image] })
@@ -629,28 +646,35 @@ function FaceImage({ name, image, onRefresh }: FaceImageProps) {
   }, [name, image, onRefresh]);
 
   const onReprocess = useCallback(() => {
+    const formData = new FormData();
+    formData.append('training_file', image);
+    formData.append('face_name', data.name);
+
     axios
-      .post(`/faces/reprocess`, { 
-        training_file: image,
-        face_name: name
+      .post('/faces/reprocess', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        }
       })
       .then((resp) => {
         if (resp.status === 200) {
-          toast.success(`Successfully trained face.`, {
+          toast.success(`Successfully reprocessed face.`, {
             position: "top-center",
           });
           onRefresh();
         }
       })
       .catch((error: AxiosError<{message: string}>) => {
+        console.error('Reprocess error:', error.response?.data);
+        
         const errorMessage = error.response?.data?.message 
           ? error.response.data.message
           : error.message;
-        toast.error(`Failed to train: ${errorMessage}`, {
+        toast.error(`Failed to reprocess: ${errorMessage}`, {
           position: "top-center",
         });
       });
-  }, [name, image, onRefresh]);
+  }, [image, data.name, onRefresh]);
 
   return (
     <div className="relative flex flex-col rounded-lg">
