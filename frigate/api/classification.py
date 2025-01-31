@@ -137,10 +137,8 @@ def train_face(request: Request, name: str, body: dict = None):
 
 
 @router.post("/faces/reprocess")
-async def reclassify_face(
-    request: Request,
-    body: dict = Body(...)
-):
+async def reclassify_face(request: Request, body: dict = Body(...)):
+    """Reprocess a face image to update its classification."""
     logger.info(f"Received reprocess request with body: {body}")
     
     if not request.app.frigate_config.face_recognition.enabled:
@@ -164,7 +162,7 @@ async def reclassify_face(
             content={"message": "Training file is required", "success": False},
         )
 
-    # Check if file exists in train directory
+    # Check if file exists in train directory or face directory
     training_path = os.path.join(FACE_DIR, "train", training_file)
     face_path = os.path.join(FACE_DIR, face_name, training_file)
     

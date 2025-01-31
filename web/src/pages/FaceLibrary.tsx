@@ -480,9 +480,7 @@ function FaceAttempt({
       .catch((error: AxiosError<{message: string}>) => {
         console.error('Reprocess error:', error.response?.data);
         
-        const errorMessage = error.response?.data?.message 
-          ? error.response.data.message
-          : error.message;
+        const errorMessage = error.response?.data?.message || error.response?.data?.detail?.[0]?.msg || error.message;
         toast.error(`Failed to reprocess: ${errorMessage}`, {
           position: "top-center",
         });
@@ -623,9 +621,7 @@ function FaceImage({ name, image, onRefresh }: FaceImageProps) {
       .catch((error: AxiosError<{message: string}>) => {
         console.error('Reprocess error:', error.response?.data);
         
-        const errorMessage = error.response?.data?.message 
-          ? error.response.data.message
-          : error.message;
+        const errorMessage = error.response?.data?.message || error.response?.data?.detail?.[0]?.msg || error.message;
         toast.error(`Failed to reprocess: ${errorMessage}`, {
           position: "top-center",
         });
