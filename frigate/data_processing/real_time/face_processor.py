@@ -5,8 +5,8 @@ import datetime
 import logging
 import os
 import random
-import string
 import shutil
+import string
 from typing import Optional
 
 import cv2
@@ -16,7 +16,7 @@ import requests
 from frigate.comms.embeddings_updater import EmbeddingsRequestEnum
 from frigate.config import FrigateConfig
 from frigate.const import FACE_DIR, FRIGATE_LOCALHOST, MODEL_CACHE_DIR
-from frigate.util.image import area
+from frigate.util.image import area, SharedMemoryFrameManager
 
 from ..types import DataProcessorMetrics
 from .api import RealTimeProcessorApi
@@ -32,14 +32,15 @@ FACE_QUALITY = 100
 
 
 class FaceProcessor(RealTimeProcessorApi):
-    def __init__(self, config: FrigateConfig, metrics: DataProcessorMetrics):
+    def __init__(self, config: FrigateConfig, metrics: DataProcessorMetrics, frame_manager: Optional[SharedMemoryFrameManager] = None):
         super().__init__(config, metrics)
         self.face_config = config.face_recognition
         self.face_detector: cv2.FaceDetectorYN = None
         self.landmark_detector: cv2.face.FacemarkLBF = None
-        self.face_recognizer: cv2.face.LBPHFaceRecognizer = None
+        self.recognizer: cv2.face.LBPHFaceRecognizer = None
         self.requires_face_detection = "face" not in self.config.objects.all_objects
         self.detected_faces: dict[str, float] = {}
+        self.frame_manager = frame_manager
 
         download_path = os.path.join(MODEL_CACHE_DIR, "facedet")
         self.model_files = {
@@ -118,6 +119,9 @@ class FaceProcessor(RealTimeProcessorApi):
                 faces.append(img)
                 labels.append(idx)
 
+        if not faces:
+            return
+
         self.recognizer: cv2.face.LBPHFaceRecognizer = (
             cv2.face.LBPHFaceRecognizer_create(
                 radius=2, threshold=(1 - self.face_config.min_score) * 1000
@@ -183,41 +187,48 @@ class FaceProcessor(RealTimeProcessorApi):
         )
 
     def __clear_classifier(self) -> None:
-        self.face_recognizer = None
+        self.recognizer = None
         self.label_map = {}
 
     def __detect_face(self, input: np.ndarray) -> tuple[int, int, int, int]:
         """Detect faces in input image."""
         if not self.face_detector:
+            logger.warning("Face detector not initialized")
             return None
 
-        self.face_detector.setInputSize((input.shape[1], input.shape[0]))
-        faces = self.face_detector.detect(input)
+        try:
+            self.face_detector.setInputSize((input.shape[1], input.shape[0]))
+            faces = self.face_detector.detect(input)
 
-        if faces is None or faces[1] is None:
+            if faces is None or faces[1] is None:
+                return None
+
+            face = None
+            for _, potential_face in enumerate(faces[1]):
+                raw_bbox = potential_face[0:4].astype(np.uint16)
+                x: int = max(raw_bbox[0], 0)
+                y: int = max(raw_bbox[1], 0)
+                w: int = raw_bbox[2]
+                h: int = raw_bbox[3]
+                bbox = (x, y, x + w, y + h)
+
+                if face is None or area(bbox) > area(face):
+                    face = bbox
+
+            return face
+        except Exception as e:
+            logger.error(f"Error detecting face: {str(e)}")
             return None
-
-        face = None
-
-        for _, potential_face in enumerate(faces[1]):
-            raw_bbox = potential_face[0:4].astype(np.uint16)
-            x: int = max(raw_bbox[0], 0)
-            y: int = max(raw_bbox[1], 0)
-            w: int = raw_bbox[2]
-            h: int = raw_bbox[3]
-            bbox = (x, y, x + w, y + h)
-
-            if face is None or area(bbox) > area(face):
-                face = bbox
-
-        return face
 
     def __classify_face(self, face_image: np.ndarray) -> tuple[str, float] | None:
         if not self.landmark_detector:
             return None
 
-        if not self.label_map:
+        if not self.label_map or not self.recognizer:
             self.__build_classifier()
+
+            if not self.recognizer:
+                return None
 
         img = cv2.cvtColor(face_image, cv2.COLOR_BGR2GRAY)
         img = self.__align_face(img, img.shape[1], img.shape[0])
@@ -238,10 +249,11 @@ class FaceProcessor(RealTimeProcessorApi):
         """Look for faces in image."""
         start = datetime.datetime.now().timestamp()
         id = obj_data["id"]
+        camera = obj_data.get("camera")
 
         # don't run for non person objects
         if obj_data.get("label") != "person":
-            logger.debug("Not a processing face for non person object.")
+            logger.debug("Not processing face for non person object.")
             return
 
         # don't overwrite sub label for objects that have a sub label
@@ -253,7 +265,9 @@ class FaceProcessor(RealTimeProcessorApi):
             return
 
         face: Optional[dict[str, any]] = None
+        face_box = None
 
+        # First detect face location using detect stream
         if self.requires_face_detection:
             logger.debug("Running manual face detection.")
             person_box = obj_data.get("box")
@@ -269,14 +283,16 @@ class FaceProcessor(RealTimeProcessorApi):
             if not face_box:
                 logger.debug("Detected no faces for person object.")
                 return
-
-            face_frame = person[
-                max(0, face_box[1]) : min(frame.shape[0], face_box[3]),
-                max(0, face_box[0]) : min(frame.shape[1], face_box[2]),
-            ]
-            face_frame = cv2.cvtColor(face_frame, cv2.COLOR_RGB2BGR)
+                
+            # Convert face_box coordinates relative to person box
+            face_box = (
+                face_box[0] + left,  # Add person box left offset
+                face_box[1] + top,   # Add person box top offset
+                face_box[2] + left,  # Add person box left offset
+                face_box[3] + top    # Add person box top offset
+            )
         else:
-            # don't run for object without attributes
+            # Use face attributes from object detector
             if not obj_data.get("current_attributes"):
                 logger.debug("No attributes to parse.")
                 return
@@ -289,19 +305,52 @@ class FaceProcessor(RealTimeProcessorApi):
                 if face is None or attr.get("score", 0.0) > face.get("score", 0.0):
                     face = attr
 
-            # no faces detected in this frame
             if not face:
                 return
 
             face_box = face.get("box")
 
-            # check that face is valid
-            if not face_box or area(face_box) < self.config.face_recognition.min_area:
-                logger.debug(f"Invalid face box {face}")
-                return
-
+        # Now get high quality image from record stream
+        try:
+            # Get frame from record stream using timestamp
+            record_frame = self.__get_record_frame(camera, obj_data.get("timestamp"))
+            
+            if record_frame is not None:
+                # Get resolution difference between detect and record streams
+                detect_height, detect_width = frame.shape[0] // 3 * 2, frame.shape[1]  # YUV420 format
+                record_height, record_width = record_frame.shape[0] // 3 * 2, record_frame.shape[1]
+                
+                # Calculate scale factors
+                width_scale = record_width / detect_width
+                height_scale = record_height / detect_height
+                
+                # Scale face box coordinates for record stream resolution
+                scaled_face_box = (
+                    int(face_box[0] * width_scale),
+                    int(face_box[1] * height_scale),
+                    int(face_box[2] * width_scale),
+                    int(face_box[3] * height_scale)
+                )
+                
+                # Convert record frame to BGR
+                record_frame = cv2.cvtColor(record_frame, cv2.COLOR_YUV2BGR_I420)
+                
+                # Extract face using scaled coordinates
+                face_frame = record_frame[
+                    max(0, scaled_face_box[1]) : min(record_frame.shape[0], scaled_face_box[3]),
+                    max(0, scaled_face_box[0]) : min(record_frame.shape[1], scaled_face_box[2]),
+                ]
+            else:
+                # Fallback to detect stream if record frame not available
+                face_frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_I420)
+                face_frame = face_frame[
+                    max(0, face_box[1]) : min(frame.shape[0], face_box[3]),
+                    max(0, face_box[0]) : min(frame.shape[1], face_box[2]),
+                ]
+        except Exception as e:
+            logger.error(f"Error getting record frame: {e}")
+            # Fallback to detect stream
             face_frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_I420)
-
             face_frame = face_frame[
                 max(0, face_box[1]) : min(frame.shape[0], face_box[3]),
                 max(0, face_box[0]) : min(frame.shape[1], face_box[2]),
@@ -348,7 +397,7 @@ class FaceProcessor(RealTimeProcessorApi):
         resp = requests.post(
             f"{FRIGATE_LOCALHOST}/api/events/{id}/sub_label",
             json={
-                "camera": obj_data.get("camera"),
+                "camera": camera,
                 "subLabel": sub_label,
                 "subLabelScore": score,
             },
@@ -359,70 +408,169 @@ class FaceProcessor(RealTimeProcessorApi):
 
         self.__update_metrics(datetime.datetime.now().timestamp() - start)
 
-    def handle_request(self, topic, request_data) -> dict[str, any] | None:
-        if topic == EmbeddingsRequestEnum.clear_face_classifier.value:
-            self.__clear_classifier()
-        elif topic == EmbeddingsRequestEnum.register_face.value:
-            face_name = request_data.get("face_name")
-            if not self.__validate_face_name(face_name):
-                return {
-                    "message": "Invalid face name",
-                    "success": False,
-                }
+    def handle_request(self, topic: str, request_data: dict[str, any]) -> dict[str, any] | None:
+        """Handle face recognition related requests."""
+        if not isinstance(topic, str):
+            return {
+                "message": "Invalid topic type",
+                "success": False,
+            }
+        
+        if not isinstance(request_data, dict):
+            return {
+                "message": "Invalid request data type",
+                "success": False,
+            }
+
+        try:
+            logger.debug(f"Processing request topic: {topic}")
             
-            try:
-                rand_id = "".join(
-                    random.choices(string.ascii_lowercase + string.digits, k=6)
-                )
-                id = f"{face_name}-{rand_id}"
+            if topic == EmbeddingsRequestEnum.clear_face_classifier.value:
+                self.__clear_classifier()
+                logger.info(f"Successfully cleared face classifier")
+                return {
+                    "message": "Successfully cleared face classifier",
+                    "success": True,
+                }
+            elif topic == EmbeddingsRequestEnum.register_face.value:
+                face_name = request_data.get("face_name")
+                if not self.__validate_face_name(face_name):
+                    return {
+                        "message": "Invalid face name",
+                        "success": False,
+                    }
 
-                if request_data.get("cropped"):
-                    thumbnail = request_data["image"]
-                else:
-                    img = cv2.imdecode(
-                        np.frombuffer(
-                            base64.b64decode(request_data["image"]), dtype=np.uint8
-                        ),
-                        cv2.IMREAD_COLOR,
+                try:
+                    rand_id = "".join(
+                        random.choices(string.ascii_lowercase + string.digits, k=6)
                     )
-                    face_box = self.__detect_face(img)
+                    id = f"{face_name}-{rand_id}"
 
-                    if not face_box:
+                    if request_data.get("cropped"):
+                        thumbnail = request_data["image"]
+                    else:
+                        img = cv2.imdecode(
+                            np.frombuffer(
+                                base64.b64decode(request_data["image"]), dtype=np.uint8
+                            ),
+                            cv2.IMREAD_COLOR,
+                        )
+                        face_box = self.__detect_face(img)
+
+                        if not face_box:
+                            return {
+                                "message": "No face was detected.",
+                                "success": False,
+                            }
+
+                        face = img[face_box[1] : face_box[3], face_box[0] : face_box[2]]
+                        _, thumbnail = cv2.imencode(
+                            ".webp", face, [int(cv2.IMWRITE_WEBP_QUALITY), FACE_QUALITY]
+                        )
+
+                    # write face to library
+                    folder = os.path.join(FACE_DIR, face_name)
+                    file = os.path.join(folder, f"{id}.webp")
+                    os.makedirs(folder, exist_ok=True)
+                    if not os.access(folder, os.W_OK):
+                        return {
+                            "message": f"No write permission for directory: {folder}",
+                            "success": False
+                        }
+
+                    # save face image
+                    with open(file, "wb") as output:
+                        output.write(thumbnail.tobytes())
+
+                    self.__clear_classifier()
+                    logger.info(f"Successfully registered face: {face_name}")
+                    return {
+                        "message": "Successfully registered face.",
+                        "success": True,
+                    }
+                except cv2.error as e:
+                    return {
+                        "message": f"Failed to process image: {str(e)}",
+                        "success": False,
+                    }
+                except Exception as e:
+                    logger.error(f"Unexpected error registering face: {str(e)}")
+                    return {
+                        "message": "Internal server error",
+                        "success": False,
+                    }
+            elif topic == EmbeddingsRequestEnum.reprocess_face.value:
+                current_file: str = request_data["training_file"]
+                id = current_file[0 : current_file.index("-", current_file.index("-") + 1)]
+                face_score = current_file[current_file.rfind("-") : current_file.rfind(".")]
+                img = None
+
+                if current_file:
+                    img = cv2.imread(current_file)
+
+                if img is None:
+                    return {
+                        "message": "Invalid image file.",
+                        "success": False,
+                    }
+
+                if not os.path.exists(current_file):
+                    return {
+                        "message": f"File not found: {current_file}",
+                        "success": False
+                    }
+
+                try:
+                    res = self.__classify_face(img)
+
+                    if not res:
                         return {
                             "message": "No face was detected.",
                             "success": False,
                         }
 
-                    face = img[face_box[1] : face_box[3], face_box[0] : face_box[2]]
-                    _, thumbnail = cv2.imencode(
-                        ".webp", face, [int(cv2.IMWRITE_WEBP_QUALITY), FACE_QUALITY]
+                    sub_label, score = res
+
+                    if not self.config.face_recognition.save_attempts:
+                        return {
+                            "message": "Face saving is disabled",
+                            "success": False
+                        }
+
+                    # write face to library
+                    folder = os.path.join(FACE_DIR, "train")
+                    new_file = os.path.join(
+                        folder, f"{id}-{sub_label}-{score}-{face_score}.webp"
                     )
-
-                # write face to library
-                folder = os.path.join(FACE_DIR, face_name)
-                file = os.path.join(folder, f"{id}.webp")
-                os.makedirs(folder, exist_ok=True)
-
-                # save face image
-                with open(file, "wb") as output:
-                    output.write(thumbnail.tobytes())
-
-                self.__clear_classifier()
+                    shutil.move(current_file, new_file)
+                    self.__clear_classifier()
+                    logger.info(f"Successfully reprocessed face: {current_file}")
+                    return {
+                        "message": "Successfully registered face.",
+                        "success": True,
+                    }
+                except cv2.error as e:
+                    return {
+                        "message": f"Failed to process image: {str(e)}",
+                        "success": False,
+                    }
+                except Exception as e:
+                    logger.error(f"Unexpected error registering face: {str(e)}")
+                    return {
+                        "message": "Internal server error",
+                        "success": False,
+                    }
+            else:
                 return {
-                    "message": "Successfully registered face.",
-                    "success": True,
-                }
-            except cv2.error as e:
-                return {
-                    "message": f"Failed to process image: {str(e)}",
+                    "message": f"Unknown request topic: {topic}",
                     "success": False,
                 }
-            except Exception as e:
-                logger.error(f"Unexpected error registering face: {str(e)}")
-                return {
-                    "message": "Internal server error",
-                    "success": False,
-                }
+        except Exception as e:
+            logger.error(f"Unexpected error handling request: {str(e)}")
+            return {
+                "message": "Internal server error",
+                "success": False,
+            }
 
     def expire_object(self, object_id: str):
         if object_id in self.detected_faces:
@@ -441,5 +589,29 @@ class FaceProcessor(RealTimeProcessorApi):
             self.face_detector = None
         if self.landmark_detector:
             self.landmark_detector = None
-        if self.face_recognizer:
-            self.face_recognizer = None
+        if self.recognizer:
+            self.recognizer = None
+
+    def __get_record_frame(self, camera: str, timestamp: float) -> Optional[np.ndarray]:
+        """Get the record frame closest to the given timestamp."""
+        if not self.frame_manager:
+            return None
+        
+        try:
+            # Get camera config to get frame shape
+            camera_config = self.config.cameras[camera]
+            
+            # Check if record stream is enabled
+            if not camera_config.record.enabled:
+                logger.debug(f"Record stream not enabled for camera {camera}")
+                return None
+
+            # Get frame from record stream
+            frame = self.frame_manager.get(
+                name=f"{camera}-record",  # Record stream frame name
+                shape=camera_config.frame_shape_yuv  # Frame shape needed for numpy array
+            )
+            return frame
+        except Exception as e:
+            logger.error(f"Error getting record frame: {e}")
+            return None
