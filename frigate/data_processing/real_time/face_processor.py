@@ -243,18 +243,24 @@ class FaceProcessor(RealTimeProcessorApi):
     def __reprocess_face(self, face_path: str) -> tuple[str, float] | None:
         """Reprocess a face image to update its classification."""
         try:
-            logger.debug(f"Attempting to reprocess face from path: {face_path}")
+            logger.info(f"Attempting to reprocess face from path: {face_path}")
             # Read and classify the face image
             face_image = cv2.imread(face_path)
             if face_image is None:
-                logger.error(f"Failed to read image from path: {face_path}")
+                error_msg = f"Failed to read image from path: {face_path}"
+                logger.error(error_msg)
                 return None
             
             result = self.__classify_face(face_image)
-            logger.debug(f"Classification result for {face_path}: {result}")
+            logger.info(f"Classification result for {face_path}: {result}")
+            
+            if not result:
+                logger.error("Classification returned no result")
+                return None
+            
             return result
         except Exception as e:
-            logger.error(f"Error reprocessing face: {str(e)}")
+            logger.error(f"Error reprocessing face: {str(e)}", exc_info=True)
             return None
 
     def __update_metrics(self, duration: float) -> None:

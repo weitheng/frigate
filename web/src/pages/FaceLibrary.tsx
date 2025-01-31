@@ -477,8 +477,10 @@ function FaceAttempt({
           onRefresh();
         }
       })
-      .catch((error) => {
-        const errorMessage = error.response?.data?.message || error.message;
+      .catch((error: AxiosError<{message: string}>) => {
+        const errorMessage = error.response?.data?.message 
+          ? error.response.data.message
+          : error.message;
         toast.error(`Failed to train: ${errorMessage}`, {
           position: "top-center",
         });
@@ -640,8 +642,10 @@ function FaceImage({ name, image, onRefresh }: FaceImageProps) {
           onRefresh();
         }
       })
-      .catch((error) => {
-        const errorMessage = error.response?.data?.message || error.message;
+      .catch((error: AxiosError<{message: string}>) => {
+        const errorMessage = error.response?.data?.message 
+          ? error.response.data.message
+          : error.message;
         toast.error(`Failed to train: ${errorMessage}`, {
           position: "top-center",
         });

@@ -138,6 +138,8 @@ def train_face(request: Request, name: str, body: dict = None):
 
 @router.post("/faces/reprocess")
 def reclassify_face(request: Request, body: dict = None):
+    logger.info(f"Received reprocess request with body: {body}")
+    
     if not request.app.frigate_config.face_recognition.enabled:
         return JSONResponse(
             status_code=400,
@@ -148,6 +150,8 @@ def reclassify_face(request: Request, body: dict = None):
     training_file = sanitize_filename(json.get('training_file', ''))
     face_name = json.get('face_name')
 
+    logger.info(f"Processing reprocess request for file: {training_file}, face: {face_name}")
+
     if not training_file:
         return JSONResponse(
             content={"success": False, "message": "Training file is required"},
@@ -156,40 +160,54 @@ def reclassify_face(request: Request, body: dict = None):
 
     # Check if file exists in train directory
     training_path = os.path.join(FACE_DIR, "train", training_file)
-    if not os.path.isfile(training_path):
-        # Check if file exists in face directory
-        face_path = os.path.join(FACE_DIR, face_name, training_file)
-        if not os.path.isfile(face_path):
-            return JSONResponse(
-                content={
-                    "success": False,
-                    "message": f"File not found: {training_file}"
-                },
-                status_code=404,
-            )
-        training_path = face_path
+    face_path = os.path.join(FACE_DIR, face_name, training_file)
+    
+    logger.info(f"Checking paths - train: {training_path}, face: {face_path}")
+
+    if not os.path.isfile(training_path) and not os.path.isfile(face_path):
+        error_msg = f"File not found at either {training_path} or {face_path}"
+        logger.error(error_msg)
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": error_msg
+            },
+            status_code=404,
+        )
 
     try:
         context: EmbeddingsContext = request.app.embeddings
         
         # For files in face directories, move to train first
-        if not training_path.startswith(os.path.join(FACE_DIR, "train")):
-            train_path = os.path.join(FACE_DIR, "train", training_file)
-            shutil.copy2(training_path, train_path)
-            os.remove(training_path)
-            training_path = train_path
+        source_path = training_path if os.path.isfile(training_path) else face_path
+        logger.info(f"Using source path: {source_path}")
 
-        response = context.reprocess_face(training_path, face_name)
+        if not source_path.startswith(os.path.join(FACE_DIR, "train")):
+            train_path = os.path.join(FACE_DIR, "train", training_file)
+            logger.info(f"Moving file to train directory: {train_path}")
+            shutil.copy2(source_path, train_path)
+            os.remove(source_path)
+            source_path = train_path
+
+        response = context.reprocess_face(source_path, face_name)
+        logger.info(f"Reprocess response: {response}")
+
+        if not response.get('success'):
+            return JSONResponse(
+                content=response,
+                status_code=422
+            )
 
         return JSONResponse(
             content=response,
-            status_code=200 if response.get('success', False) else 422,
+            status_code=200
         )
     except Exception as e:
-        logger.error(f"Failed to reprocess face: {str(e)}")
+        error_msg = f"Failed to reprocess face: {str(e)}"
+        logger.error(error_msg, exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={"success": False, "message": f"Failed to reprocess face: {str(e)}"},
+            content={"success": False, "message": error_msg},
         )
 
 
