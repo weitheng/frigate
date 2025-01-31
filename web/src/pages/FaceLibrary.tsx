@@ -633,7 +633,10 @@ function FaceImage({ name, image, onRefresh }: FaceImageProps) {
 
   const onReprocess = useCallback(() => {
     axios
-      .post(`/faces/train/${name}/classify`, { training_file: image })
+      .post(`/faces/reprocess`, { 
+        training_file: image,
+        face_name: name
+      })
       .then((resp) => {
         if (resp.status == 200) {
           toast.success(`Successfully trained face.`, {
