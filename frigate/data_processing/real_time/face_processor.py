@@ -243,12 +243,16 @@ class FaceProcessor(RealTimeProcessorApi):
     def __reprocess_face(self, face_path: str) -> tuple[str, float] | None:
         """Reprocess a face image to update its classification."""
         try:
+            logger.debug(f"Attempting to reprocess face from path: {face_path}")
             # Read and classify the face image
             face_image = cv2.imread(face_path)
             if face_image is None:
+                logger.error(f"Failed to read image from path: {face_path}")
                 return None
             
-            return self.__classify_face(face_image)
+            result = self.__classify_face(face_image)
+            logger.debug(f"Classification result for {face_path}: {result}")
+            return result
         except Exception as e:
             logger.error(f"Error reprocessing face: {str(e)}")
             return None
@@ -516,14 +520,18 @@ class FaceProcessor(RealTimeProcessorApi):
                 image_file = request_data.get("image_file")
                 face_name = request_data.get("face_name")
                 
+                logger.debug(f"Reprocess request for image: {image_file}, face: {face_name}")
+                
                 # Validate file exists
                 if not image_file or not os.path.isfile(image_file):
+                    logger.error(f"Invalid image file: {image_file}")
                     return {
                         "message": f"Invalid image file: {image_file}",
                         "success": False
                     }
 
                 if not self.config.face_recognition.save_attempts:
+                    logger.warning("Face saving is disabled")
                     return {
                         "message": "Face saving is disabled",
                         "success": False
@@ -531,6 +539,7 @@ class FaceProcessor(RealTimeProcessorApi):
 
                 # This internally does the face classification
                 result = self.__reprocess_face(image_file)
+                logger.debug(f"Reprocess result: {result}")
                 
                 if not result:
                     return {
@@ -540,18 +549,37 @@ class FaceProcessor(RealTimeProcessorApi):
                     
                 name, score = result
                 
-                # Generate new filename with score
-                rand_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-                new_name = f"{face_name}-{rand_id}-{score}.webp"
-                new_path = os.path.join(FACE_DIR, face_name, new_name)
-                
-                os.makedirs(os.path.dirname(new_path), exist_ok=True)
-                shutil.move(image_file, new_path)
-                
-                return {
-                    "message": "Successfully reprocessed face",
-                    "success": True
-                }
+                try:
+                    # Generate new filename with score
+                    rand_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+                    new_name = f"{face_name}-{rand_id}-{score}.webp"
+                    new_path = os.path.join(FACE_DIR, face_name, new_name)
+                    
+                    logger.debug(f"Moving {image_file} to {new_path}")
+                    
+                    os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                    
+                    # Check if we have write permissions
+                    if not os.access(os.path.dirname(new_path), os.W_OK):
+                        return {
+                            "message": f"No write permission for directory: {os.path.dirname(new_path)}",
+                            "success": False
+                        }
+                        
+                    shutil.move(image_file, new_path)
+                    self.__clear_classifier()
+                    
+                    logger.info(f"Successfully reprocessed face: {image_file} -> {new_path}")
+                    return {
+                        "message": "Successfully reprocessed face",
+                        "success": True
+                    }
+                except Exception as e:
+                    logger.error(f"Error moving reprocessed face: {str(e)}")
+                    return {
+                        "message": f"Failed to save reprocessed face: {str(e)}",
+                        "success": False
+                    }
             else:
                 return {
                     "message": f"Unknown request topic: {topic}",

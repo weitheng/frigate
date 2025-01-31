@@ -478,15 +478,10 @@ function FaceAttempt({
         }
       })
       .catch((error) => {
-        if (error.response?.data?.message) {
-          toast.error(`Failed to train: ${error.response.data.message}`, {
-            position: "top-center",
-          });
-        } else {
-          toast.error(`Failed to train: ${error.message}`, {
-            position: "top-center",
-          });
-        }
+        const errorMessage = error.response?.data?.message || error.message;
+        toast.error(`Failed to train: ${errorMessage}`, {
+          position: "top-center",
+        });
       });
   }, [image, data.name, onRefresh]);
 
@@ -638,7 +633,7 @@ function FaceImage({ name, image, onRefresh }: FaceImageProps) {
         face_name: name
       })
       .then((resp) => {
-        if (resp.status == 200) {
+        if (resp.status === 200) {
           toast.success(`Successfully trained face.`, {
             position: "top-center",
           });
@@ -646,15 +641,10 @@ function FaceImage({ name, image, onRefresh }: FaceImageProps) {
         }
       })
       .catch((error) => {
-        if (error.response?.data?.message) {
-          toast.error(`Failed to train: ${error.response.data.message}`, {
-            position: "top-center",
-          });
-        } else {
-          toast.error(`Failed to train: ${error.message}`, {
-            position: "top-center",
-          });
-        }
+        const errorMessage = error.response?.data?.message || error.message;
+        toast.error(`Failed to train: ${errorMessage}`, {
+          position: "top-center",
+        });
       });
   }, [name, image, onRefresh]);
 
