@@ -215,6 +215,12 @@ class EmbeddingsContext:
     def reprocess_face(self, face_file: str, face_name: str = None) -> dict[str, any]:
         """Reprocess a face image to update its classification score."""
         try:
+            if not os.path.isfile(face_file):
+                return {
+                    "success": False,
+                    "message": f"File not found: {face_file}"
+                }
+
             # First move to train directory if needed
             if face_name and not face_file.startswith(os.path.join(FACE_DIR, "train")):
                 train_path = os.path.join(FACE_DIR, "train", os.path.basename(face_file))
@@ -222,13 +228,21 @@ class EmbeddingsContext:
                 os.remove(face_file)
                 face_file = train_path
 
-            return self.requestor.send_data(
-                EmbeddingsRequestEnum.reprocess_face.value, 
+            result = self.requestor.send_data(
+                EmbeddingsRequestEnum.reprocess_face.value,
                 {
                     "image_file": face_file,
                     "face_name": face_name
                 }
             )
+
+            if not result or not result.get("success"):
+                return {
+                    "success": False,
+                    "message": result.get("message", "Failed to reprocess face")
+                }
+
+            return result
         except Exception as e:
             logger.error(f"Error in reprocess_face: {str(e)}")
             return {

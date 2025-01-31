@@ -240,6 +240,19 @@ class FaceProcessor(RealTimeProcessorApi):
         score = 1.0 - (distance / 1000)
         return self.label_map[index], round(score, 2)
 
+    def __reprocess_face(self, face_path: str) -> tuple[str, float] | None:
+        """Reprocess a face image to update its classification."""
+        try:
+            # Read and classify the face image
+            face_image = cv2.imread(face_path)
+            if face_image is None:
+                return None
+            
+            return self.__classify_face(face_image)
+        except Exception as e:
+            logger.error(f"Error reprocessing face: {str(e)}")
+            return None
+
     def __update_metrics(self, duration: float) -> None:
         self.metrics.face_rec_fps.value = (
             self.metrics.face_rec_fps.value * 9 + duration
@@ -500,76 +513,45 @@ class FaceProcessor(RealTimeProcessorApi):
                         "success": False,
                     }
             elif topic == EmbeddingsRequestEnum.reprocess_face.value:
-                current_file: str = request_data["image_file"]
-                logger.info(f"Reprocessing face: {current_file}")
+                image_file = request_data.get("image_file")
+                face_name = request_data.get("face_name")
                 
-                try:
-                    id = current_file[0 : current_file.index("-", current_file.index("-") + 1)]
-                    face_score = current_file[current_file.rfind("-") : current_file.rfind(".")]
-                except Exception as e:
-                    logger.error(f"Error parsing filename {current_file}: {e}")
+                # Validate file exists
+                if not image_file or not os.path.isfile(image_file):
                     return {
-                        "message": f"Invalid filename format: {current_file}",
+                        "message": f"Invalid image file: {image_file}",
                         "success": False
                     }
 
-                img = None
-
-                if current_file:
-                    img = cv2.imread(current_file)
-
-                if img is None:
+                if not self.config.face_recognition.save_attempts:
                     return {
-                        "message": "Invalid image file.",
-                        "success": False,
-                    }
-
-                if not os.path.exists(current_file):
-                    return {
-                        "message": f"File not found: {current_file}",
+                        "message": "Face saving is disabled",
                         "success": False
                     }
 
-                try:
-                    res = self.__classify_face(img)
-
-                    if not res:
-                        return {
-                            "message": "No face was detected.",
-                            "success": False,
-                        }
-
-                    sub_label, score = res
-
-                    if not self.config.face_recognition.save_attempts:
-                        return {
-                            "message": "Face saving is disabled",
-                            "success": False
-                        }
-
-                    # write face to library
-                    folder = os.path.join(FACE_DIR, "train")
-                    new_file = os.path.join(
-                        folder, f"{id}-{sub_label}-{score}-{face_score}.webp"
-                    )
-                    shutil.move(current_file, new_file)
-                    self.__clear_classifier()
-                    logger.info(f"Successfully reprocessed face: {current_file}")
+                # This internally does the face classification
+                result = self.__reprocess_face(image_file)
+                
+                if not result:
                     return {
-                        "message": "Successfully registered face.",
-                        "success": True,
+                        "message": "Failed to reprocess face image",
+                        "success": False
                     }
-                except cv2.error as e:
-                    return {
-                        "message": f"Failed to process image: {str(e)}",
-                        "success": False,
-                    }
-                except Exception as e:
-                    logger.error(f"Unexpected error registering face: {str(e)}")
-                    return {
-                        "message": "Internal server error",
-                        "success": False,
-                    }
+                    
+                name, score = result
+                
+                # Generate new filename with score
+                rand_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+                new_name = f"{face_name}-{rand_id}-{score}.webp"
+                new_path = os.path.join(FACE_DIR, face_name, new_name)
+                
+                os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                shutil.move(image_file, new_path)
+                
+                return {
+                    "message": "Successfully reprocessed face",
+                    "success": True
+                }
             else:
                 return {
                     "message": f"Unknown request topic: {topic}",
