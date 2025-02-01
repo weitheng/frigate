@@ -86,6 +86,7 @@ class Embeddings:
             "paddleocr-onnx-detection.onnx",
             "paddleocr-onnx-classification.onnx",
             "paddleocr-onnx-recognition.onnx",
+            "paddleocr-onnx-lpdetection.onnx",
         ]
 
         for model in models:
@@ -134,8 +135,21 @@ class Embeddings:
         self.lpr_detection_model = None
         self.lpr_classification_model = None
         self.lpr_recognition_model = None
+        self.lp_detector_model = None
 
         if self.config.lpr.enabled:
+            self.lp_detector_model = GenericONNXEmbedding(
+                model_name="lpdetection-onnx",
+                model_file="lpdetection.onnx",
+                download_urls={
+                    "lpdetection.onnx": "https://github.com/weitheng/lpdetection-onnx/raw/refs/heads/master/models/lpdetection.onnx"
+                },
+                model_size="large",
+                model_type=ModelTypeEnum.lp_detect,
+                requestor=self.requestor,
+                device="CPU",
+            )
+
             self.lpr_detection_model = GenericONNXEmbedding(
                 model_name="paddleocr-onnx",
                 model_file="detection.onnx",

@@ -15,6 +15,7 @@ import numpy as np
 import requests
 from peewee import DoesNotExist
 from playhouse.sqliteq import SqliteQueueDatabase
+from dataclasses import dataclass
 
 from frigate.comms.embeddings_updater import EmbeddingsRequestEnum, EmbeddingsResponder
 from frigate.comms.event_metadata_updater import (
@@ -46,7 +47,41 @@ from .embeddings import Embeddings
 logger = logging.getLogger(__name__)
 
 MAX_THUMBNAILS = 10
+WPOD_INPUT_SIZE = 512
+WPOD_STRIDE = 16
+WPOD_CONF_THRESH = 0.5
+LP_TARGET_SIZE = (100, 32)  # Standard license plate size
+LP_PADDING = 0.1  # 10% padding for license plate crop
+WPOD_MIN_CONFIDENCE = 0.5  # Minimum confidence for WPOD-NET detections
+LP_MIN_AREA = 100  # Minimum area for license plate region
+LP_MAX_AREA_RATIO = 0.3  # Maximum ratio of plate area to car area
 
+@dataclass
+class Detection:
+    """Represents a license plate detection with corner points and confidence score.
+    
+    Attributes:
+        points: Array of shape (2,4) containing x,y coordinates of the 4 corner points
+        prob: Detection confidence score between 0 and 1
+    """
+    points: np.ndarray  # Shape (2,4) array of x,y coordinates
+    prob: float  # Detection confidence score 0-1
+
+    def tl(self) -> np.ndarray:
+        """Get top-left point of detection box.
+        
+        Returns:
+            np.ndarray: [x,y] coordinates of top-left corner
+        """
+        return np.array([min(self.points[0]), min(self.points[1])])
+    
+    def br(self) -> np.ndarray:
+        """Get bottom-right point of detection box.
+        
+        Returns:
+            np.ndarray: [x,y] coordinates of bottom-right corner
+        """
+        return np.array([max(self.points[0]), max(self.points[1])])
 
 class EmbeddingMaintainer(threading.Thread):
     """Handle embedding queue and post event updates."""
@@ -354,25 +389,292 @@ class EmbeddingMaintainer(threading.Thread):
         if event_id:
             self.handle_regenerate_description(event_id, source)
 
-    def _detect_license_plate(self, input: np.ndarray) -> tuple[int, int, int, int]:
-        """Return the dimensions of the input image as [x, y, width, height]."""
-        height, width = input.shape[:2]
-        return (0, 0, width, height)
+    def _detect_license_plate(self, input: np.ndarray) -> Optional[tuple[tuple[int, int, int, int], np.ndarray, float]]:
+        """Detect license plate using WPOD-NET model.
+        
+        Args:
+            input: Input BGR image as numpy array
+            
+        Returns:
+            Optional tuple containing:
+                - Box coordinates as (x1,y1,x2,y2)
+                - Affine transform matrix
+                - Detection confidence score
+            Returns None if no plate is detected
+            
+        Raises:
+            ValueError: If input image is invalid
+        """
+        if input is None or not isinstance(input, np.ndarray):
+            raise ValueError("Invalid input image")
+        
+        if input.size == 0 or len(input.shape) != 3:
+            raise ValueError("Invalid input image dimensions")
+        
+        # Check if model is ready before proceeding
+        if not self.embeddings.lp_detector_model or not self.embeddings.lp_detector_model.runner:
+            logger.debug("License plate detector model not loaded or still initializing")
+            return None
 
-    def _process_license_plate(
-        self, obj_data: dict[str, any], frame: np.ndarray
-    ) -> bool:
-        """Look for license plates in image."""
-        id = obj_data["id"]
+        try:
+            # Get original dimensions
+            height, width = input.shape[:2]
+            min_dim = min(height, width)
+            
+            # Skip if image is too small
+            if min_dim < WPOD_INPUT_SIZE // 4:
+                logger.debug("Input image too small for detection")
+                return None
+            
+            # Calculate resize factor
+            factor = float(WPOD_INPUT_SIZE)/min_dim
+            w = int(width * factor)
+            h = int(height * factor)
+            
+            # Pad to multiple of stride
+            w += (WPOD_STRIDE - w % WPOD_STRIDE) if w % WPOD_STRIDE != 0 else 0
+            h += (WPOD_STRIDE - h % WPOD_STRIDE) if h % WPOD_STRIDE != 0 else 0
+            
+            # Resize and normalize
+            resized = cv2.resize(input, (w, h))
+            img = resized.astype('float32')/255.
+            img = np.expand_dims(img, axis=0)
+            
+            # Run inference
+            try:
+                Y = self.embeddings.lp_detector_model([img])[0]
+            except Exception as e:
+                logger.error(f"Error running WPOD-NET inference: {e}")
+                return None
+            
+            if Y.size == 0:
+                logger.debug("No detections from WPOD-NET model") 
+                return None
+            
+            # Get probabilities and affine parameters
+            Probs = Y[..., 0]
+            Affines = Y[..., 2:]
+            
+            # Find high confidence detections
+            points = np.where(Probs > WPOD_MIN_CONFIDENCE)
+            
+            if len(points[0]) == 0:
+                logger.debug(f"No detections above confidence threshold {WPOD_MIN_CONFIDENCE}")
+                return None
 
-        # don't run for non car objects
-        if obj_data.get("label") != "car":
-            logger.debug("Not a processing license plate for non car object.")
+            # Create list of detections
+            detections = []
+            for i in range(len(points[0])):
+                y, x = points[0][i], points[1][i]
+                prob = Probs[y, x]
+                affine = Affines[y, x].reshape(2, 3)
+                
+                # Ensure positive scale factors
+                affine[0, 0] = max(affine[0, 0], 0.)
+                affine[1, 1] = max(affine[1, 1], 0.)
+                
+                pts = self._get_plate_points(affine, (x, y), (w, h))
+                if pts is not None:
+                    # Calculate detection area
+                    hull = cv2.convexHull(pts.T.astype(np.float32))
+                    area = cv2.contourArea(hull)
+                    
+                    # Filter by minimum area
+                    if area >= LP_MIN_AREA:
+                        detections.append(Detection(pts, prob))
+                
+            # Apply NMS
+            if detections:
+                selected = self._nms(detections)
+                if selected:
+                    # Get highest confidence detection after NMS
+                    best_det = selected[0]
+                    pts = best_det.points
+                    
+                    # Get the affine transform
+                    y, x = points[0][0], points[1][0]
+                    affine = Affines[y, x].reshape(2, 3)
+                    
+                    # Convert to rectangle
+                    x1 = int(min(pts[0]))
+                    y1 = int(min(pts[1]))
+                    x2 = int(max(pts[0]))
+                    y2 = int(max(pts[1]))
+                    
+                    # Scale back to original size
+                    x1 = int(x1 * width / w)
+                    y1 = int(y1 * height / h)
+                    x2 = int(x2 * width / w)
+                    y2 = int(y2 * height / h)
+                    
+                    # Validate detection area ratio
+                    det_area = (x2 - x1) * (y2 - y1)
+                    image_area = width * height
+                    if det_area / image_area > LP_MAX_AREA_RATIO:
+                        logger.debug("Detection area too large relative to image")
+                        return None
+                    
+                    duration = datetime.datetime.now().timestamp() - start
+                    self.metrics.lpd_fps.value = (
+                        self.metrics.lpd_fps.value * 9 + duration
+                    ) / 10
+
+                    return ((x1, y1, x2, y2), affine, best_det.prob)
+        
+        except Exception as e:
+            logger.error(f"Error during license plate detection: {e}")
+            return None
+
+    def _get_plate_points(self, affine: np.ndarray, center: tuple[int, int], size: tuple[int, int]) -> Optional[np.ndarray]:
+        """Convert affine transform to plate corner points.
+        Uses perspective transform for better accuracy.
+        
+        Args:
+            affine: 2x3 affine transform matrix
+            center: (x,y) center point
+            size: (width,height) of input image
+            
+        Returns:
+            4x2 array of corner points or None if invalid
+        """
+        try:
+            # Validate inputs
+            if not isinstance(affine, np.ndarray):
+                logger.error("Invalid affine matrix type")
+                return None
+            
+            if affine.shape != (2,3):
+                logger.error("Invalid affine matrix shape") 
+                return None
+            
+            if not isinstance(center, tuple) or len(center) != 2:
+                logger.error("Invalid center point")
+                return None
+            
+            if not isinstance(size, tuple) or len(size) != 2:
+                logger.error("Invalid size")
+                return None
+
+            net_stride = WPOD_STRIDE
+            side = ((208. + 40.)/2.)/net_stride  # 7.75
+            vxx = vyy = 0.5  # alpha
+            
+            # Base rectangle
+            base = np.matrix([
+                [-vxx, -vyy, 1.],
+                [vxx, -vyy, 1.],
+                [vxx, vyy, 1.],
+                [-vxx, vyy, 1.]
+            ]).T
+            
+            # Apply affine transform
+            pts = np.array(affine * base)
+            
+            # Scale and translate points
+            mn = np.array([float(center[0]) + 0.5, float(center[1]) + 0.5])
+            pts = pts * side + mn.reshape((2, 1))
+            
+            # Normalize to image size
+            w, h = size
+            pts[0] = pts[0] * w / (w//net_stride)
+            pts[1] = pts[1] * h / (h//net_stride)
+            
+            # Convert to homogeneous coordinates
+            pts_h = np.vstack([pts, np.ones(4)])
+            
+            # Get target rectangle points
+            w_target, h_target = 100, 32  # Standard LP size
+            t_pts = self._get_rect_points(0, 0, w_target, h_target)
+            
+            # Find perspective transform
+            H = self._find_transform_matrix(pts_h, t_pts)
+            if H is None:
+                return None
+            
+            # Validate output points
+            if not np.all(np.isfinite(pts)):
+                logger.error("Invalid plate points (non-finite values)")
+                return None
+            
+            return pts
+        
+        except Exception as e:
+            logger.error(f"Error getting plate points: {e}")
+            return None
+
+    def _find_transform_matrix(self, pts: np.ndarray, t_pts: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Find perspective transform matrix H that maps pts to t_pts.
+        """
+        A = np.zeros((8, 9))
+        for i in range(4):
+            xi = pts[:, i]
+            xil = t_pts[:, i]
+            
+            A[i*2, 3:6] = -xil[2] * xi
+            A[i*2, 6:] = xil[1] * xi
+            A[i*2+1, :3] = xil[2] * xi
+            A[i*2+1, 6:] = -xil[0] * xi
+        
+        try:
+            _, _, V = np.linalg.svd(A)
+            H = V[-1, :].reshape((3, 3))
+            return H
+        except np.linalg.LinAlgError:
+            return None
+
+    def _get_rect_points(self, tlx: int, tly: int, brx: int, bry: int) -> np.ndarray:
+        """
+        Get rectangle points in homogeneous coordinates.
+        """
+        return np.matrix([
+            [tlx, brx, brx, tlx],
+            [tly, tly, bry, bry],
+            [1., 1., 1., 1.]
+        ], dtype=float)
+
+    def _process_license_plate(self, obj_data: dict[str, any], frame: np.ndarray) -> bool:
+        """Process license plate detection and recognition for an object.
+        
+        Args:
+            obj_data: Object detection data dictionary
+            frame: Input frame as numpy array
+            
+        Returns:
+            bool: True if processing completed successfully
+        """
+        # Add input validation
+        if frame is None or not isinstance(frame, np.ndarray):
+            logger.error("Invalid frame input")
+            return False
+        
+        if frame.size == 0:
+            logger.error("Empty frame")
+            return False
+        
+        if len(frame.shape) != 3:
+            logger.error("Invalid frame dimensions") 
             return False
 
-        # don't run for stationary car objects
-        if obj_data.get("stationary") == True:
-            logger.debug("Not a processing license plate for a stationary car object.")
+        id = obj_data["id"]
+
+        # Validate inputs
+        if not isinstance(frame, np.ndarray):
+            logger.error("Invalid frame type")
+            return False
+        
+        if "box" not in obj_data:
+            logger.debug("No box coordinates in object data")
+            return False
+
+        # Only process car objects
+        if obj_data.get("label") != "car":
+            logger.debug("Not processing license plate for non car object.")
+            return False
+
+        # Skip stationary cars
+        if obj_data.get("stationary"):
+            logger.debug("Not processing license plate for a stationary car object.")
             return False
 
         # don't overwrite sub label for objects that have a sub label
@@ -386,7 +688,7 @@ class EmbeddingMaintainer(threading.Thread):
         license_plate: Optional[dict[str, any]] = None
 
         if self.requires_license_plate_detection:
-            logger.debug("Running manual license_plate detection.")
+            logger.debug("Running dedicated license plate detection.")
             car_box = obj_data.get("box")
 
             if not car_box:
@@ -395,23 +697,62 @@ class EmbeddingMaintainer(threading.Thread):
             rgb = cv2.cvtColor(frame, cv2.COLOR_YUV2RGB_I420)
             left, top, right, bottom = car_box
             car = rgb[top:bottom, left:right]
-            license_plate = self._detect_license_plate(car)
-
-            if not license_plate:
-                logger.debug("Detected no license plates for car object.")
+            
+            # Run WPOD-NET detection
+            detection = self._detect_license_plate(car)
+            if not detection:
+                logger.debug("No license plate detected for car object.")
                 return False
-
-            license_plate_frame = car[
-                license_plate[1] : license_plate[3], license_plate[0] : license_plate[2]
+            
+            plate_box, affine, detection_score = detection
+            
+            # Validate plate box coordinates
+            x1, y1, x2, y2 = plate_box
+            if x1 >= x2 or y1 >= y2:
+                logger.debug("Invalid plate box coordinates")
+                return False
+            
+            frame_plate_box = [
+                left + x1,
+                top + y1,
+                left + x2,
+                top + y2
             ]
-            license_plate_frame = cv2.cvtColor(license_plate_frame, cv2.COLOR_RGB2BGR)
+            
+            # Get perspective transform
+            pts = self._get_plate_points(affine, (x1, y1), (x2-x1, y2-y1))
+            if pts is not None:
+                pts_h = np.vstack([pts, np.ones(4)])
+                t_pts = self._get_rect_points(0, 0, 100, 32)
+                H = self._find_transform_matrix(pts_h, t_pts)
+                if H is not None:
+                    # Apply perspective transform to get frontal view
+                    plate_img = cv2.warpPerspective(car, H, (100, 32))
+                    _, buffer = cv2.imencode('.jpg', plate_img)
+                    plate_attr = {
+                        "label": "license_plate",
+                        "box": frame_plate_box,
+                        "score": detection_score,  # Use stored score instead of best_det.prob
+                        "plate_img": buffer.tobytes()
+                    }
+                else:
+                    plate_attr = {
+                        "label": "license_plate",
+                        "box": frame_plate_box,
+                        "score": detection_score  # Use stored score
+                    }
+
+            if not obj_data.get("current_attributes"):
+                obj_data["current_attributes"] = []
+            obj_data["current_attributes"].append(plate_attr)
+
         else:
-            # don't run for object without attributes
+            # Handle existing license plate attributes
             if not obj_data.get("current_attributes"):
                 logger.debug("No attributes to parse.")
                 return False
 
-            attributes: list[dict[str, any]] = obj_data.get("current_attributes", [])
+            attributes = obj_data.get("current_attributes", [])
             for attr in attributes:
                 if attr.get("label") != "license_plate":
                     continue
@@ -425,23 +766,25 @@ class EmbeddingMaintainer(threading.Thread):
             if not license_plate:
                 return False
 
-            license_plate_box = license_plate.get("box")
+        license_plate_box = license_plate.get("box")
 
-            # check that license plate is valid
-            if (
-                not license_plate_box
-                or area(license_plate_box) < self.config.lpr.min_area
-            ):
-                logger.debug(f"Invalid license plate box {license_plate}")
-                return False
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_I420)
+        # Before OCR, apply crop_region
+        license_plate_frame = self._crop_region(
+            frame_bgr,
+            license_plate_box,
+            padding=0.1  # 10% padding
+        )
 
-            license_plate_frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_I420)
-            license_plate_frame = license_plate_frame[
-                license_plate_box[1] : license_plate_box[3],
-                license_plate_box[0] : license_plate_box[2],
-            ]
+        if license_plate_frame is None:
+            logger.debug("Failed to crop license plate region")
+            return False
 
-        # run detection, returns results sorted by confidence, best first
+        # Convert RGB to BGR if coming from detection path
+        if self.requires_license_plate_detection:
+            license_plate_frame = cv2.cvtColor(license_plate_frame, cv2.COLOR_RGB2BGR)
+            
+        # run detection with the properly cropped frame
         license_plates, confidences, areas = (
             self.license_plate_recognition.process_license_plate(license_plate_frame)
         )
@@ -517,6 +860,13 @@ class EmbeddingMaintainer(threading.Thread):
             )
             return True
 
+        # Validate plate detection results
+        if plate_box is not None:
+            x1, y1, x2, y2 = plate_box
+            if x1 >= x2 or y1 >= y2:
+                logger.debug("Invalid plate box coordinates")
+                return False
+                
         # Determine subLabel based on known plates, use regex matching
         # Default to the detected plate, use label name if there's a match
         sub_label = next(
@@ -546,6 +896,57 @@ class EmbeddingMaintainer(threading.Thread):
             }
 
         return True
+
+    def _crop_region(self, image: np.ndarray, box: Optional[list[int]], padding: float = 0.0) -> Optional[np.ndarray]:
+        """Crop a region from image with padding.
+        
+        Args:
+            image: Input image as numpy array
+            box: [x1, y1, x2, y2] coordinates or None
+            padding: Percentage of padding to add (0-1)
+            
+        Returns:
+            Cropped image or None if invalid
+            
+        Raises:
+            ValueError: If inputs are invalid
+        """
+        if box is None:
+            return None
+        
+        if not isinstance(image, np.ndarray):
+            raise ValueError("Invalid image input")
+        
+        if not isinstance(box, list) or len(box) != 4:
+            raise ValueError("Invalid box coordinates")
+        
+        if not 0 <= padding <= 1:
+            raise ValueError("Padding must be between 0 and 1")
+
+        height, width = image.shape[:2]
+        x1, y1, x2, y2 = box
+        
+        # Validate coordinates
+        if x1 >= x2 or y1 >= y2:
+            logger.debug("Invalid box coordinates")
+            return None
+        
+        # Add padding
+        w = x2 - x1
+        h = y2 - y1
+        pad_w = int(w * padding)
+        pad_h = int(h * padding)
+        
+        # Adjust coordinates with padding
+        x1 = max(0, x1 - pad_w)
+        y1 = max(0, y1 - pad_h)
+        x2 = min(width, x2 + pad_w)
+        y2 = min(height, y2 + pad_h)
+        
+        if x2 <= x1 or y2 <= y1:
+            return None
+        
+        return image[y1:y2, x1:x2]
 
     def _create_thumbnail(self, yuv_frame, box, height=500) -> Optional[bytes]:
         """Return jpg thumbnail of a region of the frame."""
@@ -657,3 +1058,55 @@ class EmbeddingMaintainer(threading.Thread):
         )
 
         self._embed_description(event, embed_image)
+
+    def _batch_iou(self, box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
+        """Calculate IoU between one box and an array of boxes vectorized."""
+        # Calculate intersection
+        tl = np.maximum(box[:2], boxes[:,:2])
+        br = np.minimum(box[2:], boxes[:,2:])
+        wh = np.maximum(0., br - tl)
+        intersection = wh[:,0] * wh[:,1]
+        
+        # Calculate union
+        area1 = (box[2] - box[0]) * (box[3] - box[1])
+        area2 = (boxes[:,2] - boxes[:,0]) * (boxes[:,3] - boxes[:,1])
+        union = area1 + area2 - intersection
+        
+        return intersection / union
+
+    def _nms(self, detections: list[Detection], iou_threshold: float = 0.5) -> list[Detection]:
+        """Apply Non-Maximum Suppression to filter overlapping license plate detections.
+        Args:
+            detections: List of Detection objects with bounding boxes and scores
+            iou_threshold: IoU threshold for suppressing overlapping detections (0-1)
+            
+        Returns:
+            Filtered list of Detection objects after NMS
+            
+        Note:
+            Detections are sorted by confidence score in descending order before NMS
+        """
+        
+        if not detections:
+            return []
+        
+        # Convert to numpy arrays for vectorized operations
+        boxes = np.array([np.concatenate([d.tl(), d.br()]) for d in detections])
+        scores = np.array([d.prob for d in detections])
+        
+        # Sort by confidence descending
+        indices = np.argsort(scores)[::-1]
+        boxes = boxes[indices]
+        
+        keep = []
+        while len(indices) > 0:
+            keep.append(indices[0])
+            if len(indices) == 1:
+                break
+            
+            # Calculate IoU with remaining boxes using vectorized operations
+            ious = self._batch_iou(boxes[0], boxes[1:])
+            indices = indices[1:][ious <= iou_threshold]
+            boxes = boxes[1:][ious <= iou_threshold]
+        
+        return [detections[i] for i in keep]

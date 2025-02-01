@@ -142,6 +142,8 @@ class GenericONNXEmbedding:
                 self.feature_extractor = self._load_feature_extractor()
             elif self.model_type == ModelTypeEnum.face:
                 self.feature_extractor = []
+            elif self.model_type == ModelTypeEnum.lp_detect:
+                self.feature_extractor = []
             elif self.model_type == ModelTypeEnum.lpr_detect:
                 self.feature_extractor = []
             elif self.model_type == ModelTypeEnum.lpr_classify:
@@ -222,6 +224,11 @@ class GenericONNXEmbedding:
             frame[y_center : y_center + og_h, x_center : x_center + og_w] = og
             frame = np.expand_dims(frame, axis=0)
             return [{"input_2": frame}]
+        elif self.model_type == ModelTypeEnum.lp_detect:
+            preprocessed = []
+            for img in raw_inputs:
+                preprocessed.append({"input": img})
+            return preprocessed
         elif self.model_type == ModelTypeEnum.lpr_detect:
             preprocessed = []
             for x in raw_inputs:
