@@ -86,7 +86,7 @@ class Embeddings:
             "paddleocr-onnx-detection.onnx",
             "paddleocr-onnx-classification.onnx",
             "paddleocr-onnx-recognition.onnx",
-            "paddleocr-onnx-lpdetection.onnx",
+            "lpdetection-onnx-lpdetection.onnx",
         ]
 
         for model in models:
