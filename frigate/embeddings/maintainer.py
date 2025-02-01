@@ -135,6 +135,10 @@ class EmbeddingMaintainer(threading.Thread):
                 self.lpr_config, self.requestor, self.embeddings
             )
 
+        # Add validation
+        if self.lpr_config.enabled and self.requires_license_plate_detection:
+            logger.info("Initializing WPOD-NET license plate detector")
+
     def run(self) -> None:
         """Maintain a SQLite-vec database for semantic search."""
         while not self.stop_event.is_set():
@@ -405,6 +409,7 @@ class EmbeddingMaintainer(threading.Thread):
         Raises:
             ValueError: If input image is invalid
         """
+        logger.debug(f"Starting LP detection on image shape: {input.shape}")
         if input is None or not isinstance(input, np.ndarray):
             raise ValueError("Invalid input image")
         
@@ -423,7 +428,7 @@ class EmbeddingMaintainer(threading.Thread):
             
             # Skip if image is too small
             if min_dim < WPOD_INPUT_SIZE // 4:
-                logger.debug("Input image too small for detection")
+                logger.debug("Image too small for detection: %dx%d", height, width)
                 return None
             
             # Calculate resize factor
@@ -514,6 +519,7 @@ class EmbeddingMaintainer(threading.Thread):
                         logger.debug("Detection area too large relative to image")
                         return None
                     
+                    logger.debug("Detected license plate with confidence: %.2f", best_det.prob)
                     duration = datetime.datetime.now().timestamp() - start
                     self.metrics.lpd_fps.value = (
                         self.metrics.lpd_fps.value * 9 + duration
@@ -644,6 +650,9 @@ class EmbeddingMaintainer(threading.Thread):
             bool: True if processing completed successfully
         """
         # Add input validation
+        if not self.requires_license_plate_detection:
+            logger.warning("License plate detection bypassed - ensure 'license_plate' is not in objects list")
+            
         if frame is None or not isinstance(frame, np.ndarray):
             logger.error("Invalid frame input")
             return False

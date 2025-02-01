@@ -32,6 +32,9 @@ class LoggerConfig(FrigateBaseModel):
                 "httpx": LogLevel.error,
                 "werkzeug": LogLevel.error,
                 "ws4py": LogLevel.error,
+                "frigate.embeddings.lpr.lpr": self.logs.get("frigate.embeddings.lpr.lpr", self.default),
+                "frigate.embeddings.maintainer": self.logs.get("frigate.embeddings.maintainer", self.default),
+                "frigate.data_processing.real_time.face_processor": self.logs.get("frigate.data_processing.real_time.face_processor", self.default),
                 **self.logs,
             }
 
