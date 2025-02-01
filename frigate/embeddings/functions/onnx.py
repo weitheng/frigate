@@ -38,6 +38,7 @@ class ModelTypeEnum(str, Enum):
     face = "face"
     vision = "vision"
     text = "text"
+    lp_detect = "lp_detect"
     lpr_detect = "lpr_detect"
     lpr_classify = "lpr_classify"
     lpr_recognize = "lpr_recognize"

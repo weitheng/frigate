@@ -132,10 +132,10 @@ class Embeddings:
             device="GPU" if config.semantic_search.model_size == "large" else "CPU",
         )
 
+        self.lp_detector_model = None
         self.lpr_detection_model = None
         self.lpr_classification_model = None
         self.lpr_recognition_model = None
-        self.lp_detector_model = None
 
         if self.config.lpr.enabled:
             self.lp_detector_model = GenericONNXEmbedding(
