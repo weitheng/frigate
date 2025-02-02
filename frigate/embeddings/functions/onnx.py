@@ -233,8 +233,13 @@ class GenericONNXEmbedding:
         elif self.model_type == ModelTypeEnum.lp_detect:
             preprocessed = []
             for img in raw_inputs:
-                img = np.expand_dims(img, axis=0)
-                preprocessed.append({"input": img})
+                # Add batch dimension and channel dimension if needed
+                if len(img.shape) == 2:  # Grayscale
+                    img = np.expand_dims(img, axis=0)
+                    img = np.expand_dims(img, axis=0)
+                elif len(img.shape) == 3:  # RGB
+                    img = np.expand_dims(img, axis=0)
+                preprocessed.append({"input": img.astype(np.float32)})
             return preprocessed
         elif self.model_type == ModelTypeEnum.lpr_detect:
             preprocessed = []

@@ -56,6 +56,11 @@ WPOD_MIN_CONFIDENCE = 0.5  # Minimum confidence for WPOD-NET detections
 LP_MIN_AREA = 100  # Minimum area for license plate region
 LP_MAX_AREA_RATIO = 0.3  # Maximum ratio of plate area to car area
 
+def im2single(I: np.ndarray) -> np.ndarray:
+    """Convert uint8 image to float32 single precision (0-1 range)."""
+    assert I.dtype == np.uint8, "Input must be uint8 type"
+    return I.astype(np.float32) / 255.0
+
 @dataclass
 class Detection:
     """Represents a license plate detection with corner points and confidence score.
@@ -411,18 +416,21 @@ class EmbeddingMaintainer(threading.Thread):
         """
         logger.debug(f"Starting LP detection on image shape: {input.shape}")
         
-        if input is None or not isinstance(input, np.ndarray):
-            logger.error("Invalid input image")
+        # Check if model is fully initialized
+        if not self.embeddings.lp_detector_model or not self.embeddings.lp_detector_model.runner:
+            logger.debug("LP detector model not ready")
             return None
         
-        if input.size == 0 or len(input.shape) != 3:
-            logger.error("Invalid input image dimensions")
+        # Add input validation
+        if input is None or input.size == 0:
+            logger.debug("Empty input for LP detection")
             return None
         
-        # Check if model is ready
-        if not self.embeddings.lp_detector_model:
-            logger.error("License plate detector model not loaded")
-            return None
+        # Convert to RGB if needed
+        if input.shape[-1] == 4:
+            input = cv2.cvtColor(input, cv2.COLOR_BGRA2BGR)
+        elif input.shape[-1] == 1: 
+            input = cv2.cvtColor(input, cv2.COLOR_GRAY2BGR)
         
         # Check if model is ready before proceeding
         if not self.embeddings.lp_detector_model or not self.embeddings.lp_detector_model.runner:
@@ -453,27 +461,24 @@ class EmbeddingMaintainer(threading.Thread):
             
             # Resize and normalize
             resized = cv2.resize(input, (w, h))
-            img = resized.astype('float32')/255.
+            img = im2single(resized)  # 0-1 range normalization
             img = np.expand_dims(img, axis=0)  # Adds batch dimension
 
-            # Run inference
-            try:
-                Y = self.embeddings.lp_detector_model([img])  # Remove [0] to keep batch dimension
-                if Y is None or Y.size == 0:
-                    logger.debug("No detections from WPOD-NET model") 
-                    return None
-                Y = Y[0]  # Get first batch element
-            except Exception as e:
-                logger.error(f"Error running WPOD-NET inference: {e}")
+            # Run inference - get both outputs if available
+            outputs = self.embeddings.lp_detector_model([img])
+            if not outputs:
+                logger.debug("No outputs from WPOD-NET model")
                 return None
             
-            if Y is None or Y.size == 0:
-                logger.debug("No detections from WPOD-NET model") 
-                return None
-            
-            # Get probabilities and affine parameters
-            Probs = Y[..., 0]
-            Affines = Y[..., 2:]
+            # Handle multiple outputs
+            if len(outputs) >= 2:
+                Probs = outputs[0][0][..., 0]  # Additional indexing
+                Affines = outputs[1][0][..., 2:]
+            else:
+                # Fallback to single output parsing
+                Y = outputs[0][0]
+                Probs = Y[..., 0]
+                Affines = Y[..., 2:]
             
             # Find high confidence detections
             points = np.where(Probs > WPOD_MIN_CONFIDENCE)
@@ -492,6 +497,8 @@ class EmbeddingMaintainer(threading.Thread):
                 # Ensure positive scale factors
                 affine[0, 0] = max(affine[0, 0], 0.)
                 affine[1, 1] = max(affine[1, 1], 0.)
+                
+                affine[:,2] *= WPOD_STRIDE  # Scale translation parameters
                 
                 pts = self._get_plate_points(affine, (x, y), (input.shape[1], input.shape[0]))
                 if pts is not None:
@@ -593,7 +600,7 @@ class EmbeddingMaintainer(threading.Thread):
             pts = np.array(affine * base)
             
             # Scale and translate points
-            mn = np.array([float(center[0]) + 0.5, float(center[1]) + 0.5])
+            mn = np.array([float(center[0]) + 0.5, float(center[1]) + 0.5]) * net_stride
             pts = pts * side + mn.reshape((2, 1))
             
             # Normalize to image size
@@ -665,6 +672,7 @@ class EmbeddingMaintainer(threading.Thread):
         Returns:
             bool: True if processing completed successfully
         """
+        logger.debug(f"Processing license plate for object {obj_data['id']}")
         # Add input validation
         if not self.requires_license_plate_detection:
             logger.warning("License plate detection bypassed - ensure 'license_plate' is not in objects list")
@@ -720,7 +728,7 @@ class EmbeddingMaintainer(threading.Thread):
                 logger.warning("No car box found in object data")
                 return False
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_YUV2RGB_I420)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_I420)
             left, top, right, bottom = car_box
             car = rgb[top:bottom, left:right]
             
@@ -736,43 +744,50 @@ class EmbeddingMaintainer(threading.Thread):
             # Add debug logging for detection results
             logger.debug(f"License plate detection results: {detection}")
             
-            plate_box, affine, detection_score = detection
-            
-            # Validate plate box coordinates
-            x1, y1, x2, y2 = plate_box
-            if x1 >= x2 or y1 >= y2:
-                logger.debug("Invalid plate box coordinates")
-                return False
-            
-            frame_plate_box = [
-                left + x1,
-                top + y1,
-                left + x2,
-                top + y2
-            ]
-            
-            # Get perspective transform
-            pts = self._get_plate_points(affine, (x1, y1), (x2-x1, y2-y1))
-            if pts is not None:
-                pts_h = np.vstack([pts, np.ones(4)])
-                t_pts = self._get_rect_points(0, 0, 100, 32)
-                H = self._find_transform_matrix(pts_h, t_pts)
-                if H is not None:
-                    # Apply perspective transform to get frontal view
-                    plate_img = cv2.warpPerspective(car, H, (100, 32))
-                    _, buffer = cv2.imencode('.jpg', plate_img)
-                    plate_attr = {
-                        "label": "license_plate",
-                        "box": frame_plate_box,
-                        "score": detection_score,  # Use stored score instead of best_det.prob
-                        "plate_img": buffer.tobytes()
-                    }
-                else:
-                    plate_attr = {
-                        "label": "license_plate",
-                        "box": frame_plate_box,
-                        "score": detection_score  # Use stored score
-                    }
+            if detection:
+                logger.debug(f"Detected plate with score: {detection[2]:.2f}")
+                plate_box, affine, detection_score = detection
+                
+                # Validate plate box coordinates
+                x1, y1, x2, y2 = plate_box
+                if x1 >= x2 or y1 >= y2:
+                    logger.debug("Invalid plate box coordinates")
+                    return False
+                
+                frame_plate_box = [
+                    left + x1,
+                    top + y1,
+                    left + x2,
+                    top + y2
+                ]
+                
+                # Get perspective transform
+                pts = self._get_plate_points(affine, (x1, y1), (x2-x1, y2-y1))
+                if pts is not None:
+                    pts_h = np.vstack([pts, np.ones(4)])
+                    t_pts = self._get_rect_points(0, 0, 100, 32)
+                    H = self._find_transform_matrix(pts_h, t_pts)
+                    if H is not None:
+                        # Apply perspective transform to get frontal view
+                        plate_img = cv2.warpPerspective(
+                            car, 
+                            H,
+                            (2*int(x2-x1/10)+x2-x1, 2*int(y2-y1/10)+y2-y1),  # From working code
+                            borderValue=.0
+                        )
+                        _, buffer = cv2.imencode('.jpg', plate_img)
+                        plate_attr = {
+                            "label": "license_plate",
+                            "box": frame_plate_box,
+                            "score": detection_score,  # Use stored score instead of best_det.prob
+                            "plate_img": buffer.tobytes()
+                        }
+                    else:
+                        plate_attr = {
+                            "label": "license_plate",
+                            "box": frame_plate_box,
+                            "score": detection_score  # Use stored score
+                        }
 
             if not obj_data.get("current_attributes"):
                 obj_data["current_attributes"] = []
