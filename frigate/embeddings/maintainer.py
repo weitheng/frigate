@@ -454,16 +454,20 @@ class EmbeddingMaintainer(threading.Thread):
             # Resize and normalize
             resized = cv2.resize(input, (w, h))
             img = resized.astype('float32')/255.
-            img = np.expand_dims(img, axis=0)
-            
+            img = np.expand_dims(img, axis=0)  # Adds batch dimension
+
             # Run inference
             try:
-                Y = self.embeddings.lp_detector_model([img])[0]
+                Y = self.embeddings.lp_detector_model([img])  # Remove [0] to keep batch dimension
+                if Y is None or Y.size == 0:
+                    logger.debug("No detections from WPOD-NET model") 
+                    return None
+                Y = Y[0]  # Get first batch element
             except Exception as e:
                 logger.error(f"Error running WPOD-NET inference: {e}")
                 return None
             
-            if Y.size == 0:
+            if Y is None or Y.size == 0:
                 logger.debug("No detections from WPOD-NET model") 
                 return None
             
@@ -489,7 +493,7 @@ class EmbeddingMaintainer(threading.Thread):
                 affine[0, 0] = max(affine[0, 0], 0.)
                 affine[1, 1] = max(affine[1, 1], 0.)
                 
-                pts = self._get_plate_points(affine, (x, y), (w, h))
+                pts = self._get_plate_points(affine, (x, y), (input.shape[1], input.shape[0]))
                 if pts is not None:
                     # Calculate detection area
                     hull = cv2.convexHull(pts.T.astype(np.float32))
@@ -498,7 +502,7 @@ class EmbeddingMaintainer(threading.Thread):
                     # Filter by minimum area
                     if area >= LP_MIN_AREA:
                         detections.append(Detection(pts, prob))
-                
+            
             # Apply NMS
             if detections:
                 selected = self._nms(detections)
@@ -518,14 +522,14 @@ class EmbeddingMaintainer(threading.Thread):
                     y2 = int(max(pts[1]))
                     
                     # Scale back to original size
-                    x1 = int(x1 * width / w)
-                    y1 = int(y1 * height / h)
-                    x2 = int(x2 * width / w)
-                    y2 = int(y2 * height / h)
+                    x1 = int(x1 * input.shape[1] / input.shape[1])
+                    y1 = int(y1 * input.shape[0] / input.shape[0])
+                    x2 = int(x2 * input.shape[1] / input.shape[1])
+                    y2 = int(y2 * input.shape[0] / input.shape[0])
                     
                     # Validate detection area ratio
                     det_area = (x2 - x1) * (y2 - y1)
-                    image_area = width * height
+                    image_area = input.shape[0] * input.shape[1]
                     if det_area / image_area > LP_MAX_AREA_RATIO:
                         logger.debug("Detection area too large relative to image")
                         return None
@@ -713,17 +717,24 @@ class EmbeddingMaintainer(threading.Thread):
             car_box = obj_data.get("box")
 
             if not car_box:
+                logger.warning("No car box found in object data")
                 return False
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_YUV2RGB_I420)
             left, top, right, bottom = car_box
             car = rgb[top:bottom, left:right]
             
-            # Run WPOD-NET detection
+            # Add debug logging for car crop dimensions
+            logger.debug(f"Car crop dimensions: {car.shape}")
+            
+            # Run WPOD-NET detection with debug logging
             detection = self._detect_license_plate(car)
             if not detection:
                 logger.debug("No license plate detected for car object.")
                 return False
+            
+            # Add debug logging for detection results
+            logger.debug(f"License plate detection results: {detection}")
             
             plate_box, affine, detection_score = detection
             

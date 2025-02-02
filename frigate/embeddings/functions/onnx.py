@@ -233,6 +233,7 @@ class GenericONNXEmbedding:
         elif self.model_type == ModelTypeEnum.lp_detect:
             preprocessed = []
             for img in raw_inputs:
+                img = np.expand_dims(img, axis=0)
                 preprocessed.append({"input": img})
             return preprocessed
         elif self.model_type == ModelTypeEnum.lpr_detect:
@@ -282,7 +283,11 @@ class GenericONNXEmbedding:
         for input in processed_inputs:
             for key, value in input.items():
                 if key in input_names:
-                    onnx_inputs[key].append(value[0])
+                    # Only add batch dimension for LP detection
+                    if self.model_type == ModelTypeEnum.lp_detect:
+                        onnx_inputs[key].append(value)
+                    else:
+                        onnx_inputs[key].append(value[0] if isinstance(value, np.ndarray) and value.ndim > 0 else value)
 
         for key in input_names:
             if onnx_inputs.get(key):

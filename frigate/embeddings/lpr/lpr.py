@@ -148,6 +148,9 @@ class LicensePlateRecognition:
         Returns:
             Tuple[List[str], List[float], List[int]]: Detected license plate texts, confidence scores, and areas of the plates.
         """
+        # Add debug logging
+        logger.debug("Starting license plate recognition process")
+        
         if (
             self.detection_model.runner is None
             or self.classification_model.runner is None
@@ -157,7 +160,16 @@ class LicensePlateRecognition:
             logger.debug("Model runners not loaded")
             return [], [], []
 
+        # Add shape validation
+        if image is None or not isinstance(image, np.ndarray):
+            logger.error("Invalid image input")
+            return [], [], []
+        
+        logger.debug(f"Input image shape: {image.shape}")
+        
         plate_points = self.detect(image)
+        logger.debug(f"Detected plate points: {len(plate_points)}")
+        
         if len(plate_points) == 0:
             return [], [], []
 
