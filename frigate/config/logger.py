@@ -28,6 +28,7 @@ class LoggerConfig(FrigateBaseModel):
         if isinstance(info.context, dict) and info.context.get("install", False):
             logging.getLogger().setLevel(self.default.value.upper())
 
+            # Ensure propagation is enabled for all loggers
             log_levels = {
                 "httpx": LogLevel.error,
                 "werkzeug": LogLevel.error,
@@ -39,4 +40,7 @@ class LoggerConfig(FrigateBaseModel):
             }
 
             for log, level in log_levels.items():
-                logging.getLogger(log).setLevel(level.value.upper())
+                logger = logging.getLogger(log)
+                logger.setLevel(level.value.upper())
+                # Ensure propagation is enabled
+                logger.propagate = True

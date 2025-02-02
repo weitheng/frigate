@@ -74,10 +74,12 @@ class GenericONNXEmbedding:
             [self.tokenizer_file] if self.tokenizer_file else []
         )
 
+        logger.debug(f"Initializing {model_type} model: {model_name}")
+
         if not all(
             os.path.exists(os.path.join(self.download_path, n)) for n in files_names
         ):
-            logger.debug(f"starting model download for {self.model_name}")
+            logger.info(f"Starting model download for {self.model_name} ({model_type})")
             self.downloader = ModelDownloader(
                 model_name=self.model_name,
                 download_path=self.download_path,
@@ -93,8 +95,8 @@ class GenericONNXEmbedding:
                 files_names,
                 ModelStatusTypesEnum.downloaded,
             )
+            logger.info(f"Loading {model_type} model: {model_name}")
             self._load_model_and_utils()
-            logger.debug(f"models are already downloaded for {self.model_name}")
 
     def _download_model(self, path: str):
         try:
@@ -137,23 +139,26 @@ class GenericONNXEmbedding:
         if self.runner is None:
             if self.downloader:
                 self.downloader.wait_for_download()
+            
+            logger.debug(f"Loading model utilities for {self.model_name} ({self.model_type})")
+            
             if self.model_type == ModelTypeEnum.text:
                 self.tokenizer = self._load_tokenizer()
             elif self.model_type == ModelTypeEnum.vision:
                 self.feature_extractor = self._load_feature_extractor()
-            elif self.model_type == ModelTypeEnum.face:
-                self.feature_extractor = []
-            elif self.model_type == ModelTypeEnum.lp_detect:
-                self.feature_extractor = []
-            elif self.model_type == ModelTypeEnum.lpr_detect:
-                self.feature_extractor = []
-            elif self.model_type == ModelTypeEnum.lpr_classify:
-                self.feature_extractor = []
-            elif self.model_type == ModelTypeEnum.lpr_recognize:
+            elif self.model_type in (
+                ModelTypeEnum.face,
+                ModelTypeEnum.lp_detect,
+                ModelTypeEnum.lpr_detect,
+                ModelTypeEnum.lpr_classify,
+                ModelTypeEnum.lpr_recognize
+            ):
                 self.feature_extractor = []
 
+            model_path = os.path.join(self.download_path, self.model_file)
+            logger.info(f"Initializing ONNX runner for {self.model_name} on {self.device}")
             self.runner = ONNXModelRunner(
-                os.path.join(self.download_path, self.model_file),
+                model_path,
                 self.device,
                 self.model_size,
             )

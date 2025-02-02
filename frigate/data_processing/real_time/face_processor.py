@@ -239,18 +239,19 @@ class FaceProcessor(RealTimeProcessorApi):
         start = datetime.datetime.now().timestamp()
         id = obj_data["id"]
 
+        logger.debug(f"Processing frame for object {id}")
+
         # don't run for non person objects
         if obj_data.get("label") != "person":
-            logger.debug("Not a processing face for non person object.")
+            logger.debug(f"Not processing face for non person object: {obj_data.get('label')}")
             return
 
-        # don't overwrite sub label for objects that have a sub label
-        # that is not a face
-        if obj_data.get("sub_label") and id not in self.detected_faces:
-            logger.debug(
-                f"Not processing face due to existing sub label: {obj_data.get('sub_label')}."
-            )
-            return
+        # Add more detailed logging
+        if obj_data.get("sub_label"):
+            logger.debug(f"Object {id} already has sub_label: {obj_data.get('sub_label')}")
+        
+        if id in self.detected_faces:
+            logger.debug(f"Object {id} already has detected face score: {self.detected_faces[id]}")
 
         face: Optional[dict[str, any]] = None
 

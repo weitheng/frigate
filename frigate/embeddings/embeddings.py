@@ -97,6 +97,8 @@ class Embeddings:
                     "state": ModelStatusTypesEnum.not_downloaded,
                 },
             )
+        
+        logger.info("Initializing embedding models...")
 
         self.text_embedding = GenericONNXEmbedding(
             model_name="jinaai/jina-clip-v1",
@@ -138,6 +140,7 @@ class Embeddings:
         self.lpr_recognition_model = None
 
         if self.config.lpr.enabled:
+            logger.info("Initializing license plate detection models...")
             self.lp_detector_model = GenericONNXEmbedding(
                 model_name="lpdetection-onnx",
                 model_file="lpdetection.onnx",
@@ -150,6 +153,8 @@ class Embeddings:
                 device="CPU",
             )
 
+            # Initialize OCR models
+            logger.info("Initializing OCR models...")
             self.lpr_detection_model = GenericONNXEmbedding(
                 model_name="paddleocr-onnx",
                 model_file="detection.onnx",

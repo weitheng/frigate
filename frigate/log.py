@@ -49,7 +49,19 @@ def setup_logging() -> None:
         force=True,
     )
 
-    logging.getLogger().addHandler(QueueHandler(log_listener.queue))
+    # Ensure the root logger has the queue handler
+    root_logger = logging.getLogger()
+    queue_handler = QueueHandler(log_listener.queue)
+    root_logger.addHandler(queue_handler)
+    
+    # Explicitly set propagate=True for key loggers
+    for logger_name in [
+        "frigate.embeddings.lpr.lpr",
+        "frigate.embeddings.maintainer",
+        "frigate.data_processing.real_time.face_processor",
+    ]:
+        logger = logging.getLogger(logger_name)
+        logger.propagate = True
 
 
 def _stop_logging() -> None:

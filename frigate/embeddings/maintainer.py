@@ -410,11 +410,19 @@ class EmbeddingMaintainer(threading.Thread):
             ValueError: If input image is invalid
         """
         logger.debug(f"Starting LP detection on image shape: {input.shape}")
+        
         if input is None or not isinstance(input, np.ndarray):
-            raise ValueError("Invalid input image")
+            logger.error("Invalid input image")
+            return None
         
         if input.size == 0 or len(input.shape) != 3:
-            raise ValueError("Invalid input image dimensions")
+            logger.error("Invalid input image dimensions")
+            return None
+        
+        # Check if model is ready
+        if not self.embeddings.lp_detector_model:
+            logger.error("License plate detector model not loaded")
+            return None
         
         # Check if model is ready before proceeding
         if not self.embeddings.lp_detector_model or not self.embeddings.lp_detector_model.runner:
