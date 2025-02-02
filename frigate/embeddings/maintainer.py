@@ -410,15 +410,12 @@ class EmbeddingMaintainer(threading.Thread):
                 - Affine transform matrix
                 - Detection confidence score
             Returns None if no plate is detected
-            
-        Raises:
-            ValueError: If input image is invalid
         """
         logger.debug(f"Starting LP detection on image shape: {input.shape}")
         
-        # Check if model is fully initialized
+        # Check if model is ready before proceeding
         if not self.embeddings.lp_detector_model or not self.embeddings.lp_detector_model.runner:
-            logger.debug("LP detector model not ready")
+            logger.debug("License plate detector model not loaded or still initializing")
             return None
         
         # Add input validation
@@ -426,46 +423,49 @@ class EmbeddingMaintainer(threading.Thread):
             logger.debug("Empty input for LP detection")
             return None
         
-        # Convert to RGB if needed
-        if input.shape[-1] == 4:
-            input = cv2.cvtColor(input, cv2.COLOR_BGRA2BGR)
-        elif input.shape[-1] == 1: 
-            input = cv2.cvtColor(input, cv2.COLOR_GRAY2BGR)
-        
-        # Check if model is ready before proceeding
-        if not self.embeddings.lp_detector_model or not self.embeddings.lp_detector_model.runner:
-            logger.debug("License plate detector model not loaded or still initializing")
-            return None
-
         try:
             # Initialize start time for measuring detection speed
             start = datetime.datetime.now().timestamp()
             
             # Get original dimensions
-            height, width = input.shape[:2]
-            min_dim = min(height, width)
+            h, w = input.shape[:2]
+            min_dim = min(h, w)
             
             # Skip if image is too small
             if min_dim < WPOD_INPUT_SIZE // 4:
-                logger.debug("Image too small for detection: %dx%d", height, width)
+                logger.debug("Image too small for detection: %dx%d", h, w)
                 return None
             
+            # Convert to BGR if needed (WPOD-NET expects BGR)
+            if input.shape[-1] == 4:
+                input = cv2.cvtColor(input, cv2.COLOR_BGRA2BGR)
+            elif input.shape[-1] == 1: 
+                input = cv2.cvtColor(input, cv2.COLOR_GRAY2BGR)
+            
+            # Calculate dimensions for resizing
+            ratio = float(max(h, w))/min(h, w)
+            side = int(ratio * 288.)  # Base size from example implementation
+            bound_dim = min(side + (side % (2**4)), 608)  # Max dimension with stride consideration
+            
             # Calculate resize factor
-            factor = float(WPOD_INPUT_SIZE)/min_dim
-            w = int(width * factor)
-            h = int(height * factor)
+            factor = min(bound_dim / max(h, w), 1.0)
+            resize_h = max(int(round(int(h * factor) / 32) * 32), 32)
+            resize_w = max(int(round(int(w * factor) / 32) * 32), 32)
             
-            # Pad to multiple of stride
-            w += (WPOD_STRIDE - w % WPOD_STRIDE) if w % WPOD_STRIDE != 0 else 0
-            h += (WPOD_STRIDE - h % WPOD_STRIDE) if h % WPOD_STRIDE != 0 else 0
+            logger.debug(f"Resizing image from {h}x{w} to {resize_h}x{resize_w}")
             
-            # Resize and normalize
-            resized = cv2.resize(input, (w, h))
-            img = im2single(resized)  # 0-1 range normalization
-            img = np.expand_dims(img, axis=0)  # Adds batch dimension
-
+            # Resize image
+            resized = cv2.resize(input, (resize_w, resize_h))
+            
+            # Normalize to 0-1 range (im2single equivalent)
+            normalized = resized.astype(np.float32) / 255.0
+            
+            # WPOD-NET expects input in NCHW format
+            normalized = normalized.transpose(2, 0, 1)  # HWC to CHW
+            normalized = np.expand_dims(normalized, axis=0)  # Add batch dimension -> NCHW
+            
             # Run inference - get both outputs if available
-            outputs = self.embeddings.lp_detector_model([img])
+            outputs = self.embeddings.lp_detector_model([normalized])[0]
             if not outputs:
                 logger.debug("No outputs from WPOD-NET model")
                 return None
@@ -480,6 +480,8 @@ class EmbeddingMaintainer(threading.Thread):
                 Probs = Y[..., 0]
                 Affines = Y[..., 2:]
             
+            logger.debug(f"Detection probabilities shape: {Probs.shape}, range: [{Probs.min():.3f}, {Probs.max():.3f}]")
+            
             # Find high confidence detections
             points = np.where(Probs > WPOD_MIN_CONFIDENCE)
             
@@ -491,18 +493,13 @@ class EmbeddingMaintainer(threading.Thread):
             detections = []
             for i in range(len(points[0])):
                 y, x = points[0][i], points[1][i]
-                prob = Probs[y, x]
                 affine = Affines[y, x].reshape(2, 3)
+                prob = Probs[y, x]
                 
-                # Ensure positive scale factors
-                affine[0, 0] = max(affine[0, 0], 0.)
-                affine[1, 1] = max(affine[1, 1], 0.)
-                
-                affine[:,2] *= WPOD_STRIDE  # Scale translation parameters
-                
+                # Get plate points
                 pts = self._get_plate_points(affine, (x, y), (input.shape[1], input.shape[0]))
                 if pts is not None:
-                    # Calculate detection area
+                    # Calculate detection area using convex hull
                     hull = cv2.convexHull(pts.T.astype(np.float32))
                     area = cv2.contourArea(hull)
                     
@@ -510,7 +507,7 @@ class EmbeddingMaintainer(threading.Thread):
                     if area >= LP_MIN_AREA:
                         detections.append(Detection(pts, prob))
             
-            # Apply NMS
+            # Apply NMS to filter overlapping detections
             if detections:
                 selected = self._nms(detections)
                 if selected:
@@ -522,26 +519,32 @@ class EmbeddingMaintainer(threading.Thread):
                     y, x = points[0][0], points[1][0]
                     affine = Affines[y, x].reshape(2, 3)
                     
-                    # Convert to rectangle
+                    # Convert to rectangle coordinates
                     x1 = int(min(pts[0]))
                     y1 = int(min(pts[1]))
                     x2 = int(max(pts[0]))
                     y2 = int(max(pts[1]))
                     
-                    # Scale back to original size
-                    x1 = int(x1 * input.shape[1] / input.shape[1])
-                    y1 = int(y1 * input.shape[0] / input.shape[0])
-                    x2 = int(x2 * input.shape[1] / input.shape[1])
-                    y2 = int(y2 * input.shape[0] / input.shape[0])
+                    # Scale back to original size using the resize factor
+                    x1 = int(x1 / factor)
+                    y1 = int(y1 / factor)
+                    x2 = int(x2 / factor)
+                    y2 = int(y2 / factor)
+                    
+                    # Clip to image boundaries
+                    x1 = max(0, min(x1, w))
+                    y1 = max(0, min(y1, h))
+                    x2 = max(0, min(x2, w))
+                    y2 = max(0, min(y2, h))
                     
                     # Validate detection area ratio
                     det_area = (x2 - x1) * (y2 - y1)
-                    image_area = input.shape[0] * input.shape[1]
+                    image_area = h * w
                     if det_area / image_area > LP_MAX_AREA_RATIO:
                         logger.debug("Detection area too large relative to image")
                         return None
                     
-                    logger.debug("Detected license plate with confidence: %.2f", best_det.prob)
+                    logger.debug(f"Detected license plate with confidence: {best_det.prob:.3f}, box: ({x1},{y1},{x2},{y2})")
                     
                     duration = datetime.datetime.now().timestamp() - start
                     self.metrics.lpd_fps.value = (
@@ -549,10 +552,11 @@ class EmbeddingMaintainer(threading.Thread):
                     ) / 10
 
                     return ((x1, y1, x2, y2), affine, best_det.prob)
-        
+            
         except Exception as e:
             logger.error(f"Error during license plate detection: {e}")
-            return None
+            
+        return None
 
     def _get_plate_points(self, affine: np.ndarray, center: tuple[int, int], size: tuple[int, int]) -> Optional[np.ndarray]:
         """Convert affine transform to plate corner points.
@@ -575,14 +579,6 @@ class EmbeddingMaintainer(threading.Thread):
             if affine.shape != (2,3):
                 logger.error("Invalid affine matrix shape") 
                 return None
-            
-            if not isinstance(center, tuple) or len(center) != 2:
-                logger.error("Invalid center point")
-                return None
-            
-            if not isinstance(size, tuple) or len(size) != 2:
-                logger.error("Invalid size")
-                return None
 
             net_stride = WPOD_STRIDE
             side = ((208. + 40.)/2.)/net_stride  # 7.75
@@ -596,29 +592,23 @@ class EmbeddingMaintainer(threading.Thread):
                 [-vxx, vyy, 1.]
             ]).T
             
+            # Ensure positive scale factors and scale translation parameters
+            A = np.reshape(affine, (2,3))
+            A[0,0] = max(A[0,0], 0.)
+            A[1,1] = max(A[1,1], 0.)
+            A[:,2] *= net_stride  # Scale translation parameters
+            
             # Apply affine transform
-            pts = np.array(affine * base)
+            pts = np.array(A * base)
             
             # Scale and translate points
             mn = np.array([float(center[0]) + 0.5, float(center[1]) + 0.5]) * net_stride
-            pts = pts * side + mn.reshape((2, 1))
+            pts = pts * side + mn.reshape((2,1))
             
             # Normalize to image size
             w, h = size
             pts[0] = pts[0] * w / (w//net_stride)
             pts[1] = pts[1] * h / (h//net_stride)
-            
-            # Convert to homogeneous coordinates
-            pts_h = np.vstack([pts, np.ones(4)])
-            
-            # Get target rectangle points
-            w_target, h_target = 100, 32  # Standard LP size
-            t_pts = self._get_rect_points(0, 0, w_target, h_target)
-            
-            # Find perspective transform
-            H = self._find_transform_matrix(pts_h, t_pts)
-            if H is None:
-                return None
             
             # Validate output points
             if not np.all(np.isfinite(pts)):
@@ -634,27 +624,48 @@ class EmbeddingMaintainer(threading.Thread):
     def _find_transform_matrix(self, pts: np.ndarray, t_pts: np.ndarray) -> Optional[np.ndarray]:
         """
         Find perspective transform matrix H that maps pts to t_pts.
-        """
-        A = np.zeros((8, 9))
-        for i in range(4):
-            xi = pts[:, i]
-            xil = t_pts[:, i]
-            
-            A[i*2, 3:6] = -xil[2] * xi
-            A[i*2, 6:] = xil[1] * xi
-            A[i*2+1, :3] = xil[2] * xi
-            A[i*2+1, 6:] = -xil[0] * xi
         
+        Args:
+            pts: Source points in homogeneous coordinates (3x4)
+            t_pts: Target points in homogeneous coordinates (3x4)
+            
+        Returns:
+            3x3 perspective transform matrix or None if calculation fails
+        """
         try:
+            A = np.zeros((8, 9))
+            for i in range(4):
+                xi = pts[:, i]
+                xil = t_pts[:, i]
+                
+                A[i*2, 3:6] = -xil[2] * xi
+                A[i*2, 6:] = xil[1] * xi
+                A[i*2+1, :3] = xil[2] * xi
+                A[i*2+1, 6:] = -xil[0] * xi
+            
             _, _, V = np.linalg.svd(A)
             H = V[-1, :].reshape((3, 3))
+            
+            # Normalize H
+            if H[2,2] != 0:
+                H = H / H[2,2]
             return H
-        except np.linalg.LinAlgError:
+        except Exception as e:
+            logger.error(f"Error finding transform matrix: {str(e)}")
             return None
 
     def _get_rect_points(self, tlx: int, tly: int, brx: int, bry: int) -> np.ndarray:
         """
         Get rectangle points in homogeneous coordinates.
+        
+        Args:
+            tlx: Top-left x coordinate
+            tly: Top-left y coordinate
+            brx: Bottom-right x coordinate
+            bry: Bottom-right y coordinate
+            
+        Returns:
+            3x4 matrix of homogeneous coordinates
         """
         return np.matrix([
             [tlx, brx, brx, tlx],
@@ -1157,3 +1168,65 @@ class EmbeddingMaintainer(threading.Thread):
             boxes = boxes[1:][ious <= iou_threshold]
         
         return [detections[i] for i in keep]
+
+    def _crop_license_plate(self, image: np.ndarray, points: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Crop the license plate from the image using four corner points.
+        Uses perspective transform for better accuracy.
+        
+        Args:
+            image (np.ndarray): Input image containing the license plate.
+            points (np.ndarray): Four corner points defining the plate's position.
+            
+        Returns:
+            np.ndarray: Cropped and perspective corrected license plate image.
+        """
+        try:
+            assert len(points) == 4, "shape of points must be 4*2"
+            points = points.astype(np.float32)
+            
+            # Calculate width and height based on point distances
+            width = int(max(
+                np.linalg.norm(points[0] - points[1]),
+                np.linalg.norm(points[2] - points[3])
+            ))
+            height = int(max(
+                np.linalg.norm(points[0] - points[3]),
+                np.linalg.norm(points[1] - points[2])
+            ))
+            
+            # Add padding for better recognition
+            pad_w = int(width * LP_PADDING)
+            pad_h = int(height * LP_PADDING)
+            target_width = width + 2*pad_w
+            target_height = height + 2*pad_h
+            
+            # Define target points with padding
+            target_points = np.float32([
+                [pad_w, pad_h],
+                [pad_w + width, pad_h],
+                [pad_w + width, pad_h + height],
+                [pad_w, pad_h + height]
+            ])
+            
+            # Get perspective transform matrix
+            matrix = cv2.getPerspectiveTransform(points, target_points)
+            
+            # Apply perspective transform
+            warped = cv2.warpPerspective(
+                image,
+                matrix,
+                (target_width, target_height),
+                borderMode=cv2.BORDER_REPLICATE,
+                flags=cv2.INTER_CUBIC
+            )
+            
+            # Rotate if plate is vertical
+            if height * 1.0 / width >= 1.5:
+                warped = np.rot90(warped, k=3)
+                
+            return warped
+            
+        except Exception as e:
+            logger.error(f"Error cropping license plate: {str(e)}")
+            return None

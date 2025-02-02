@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import requests
 from PIL import Image
+import cv2
 
 # importing this without pytorch or others causes a warning
 # https://github.com/huggingface/transformers/issues/27214
@@ -32,6 +33,7 @@ disable_progress_bar()
 logger = logging.getLogger(__name__)
 
 FACE_EMBEDDING_SIZE = 160
+WPOD_STRIDE = 32
 
 
 class ModelTypeEnum(str, Enum):
@@ -156,12 +158,25 @@ class GenericONNXEmbedding:
                 self.feature_extractor = []
 
             model_path = os.path.join(self.download_path, self.model_file)
+            if not os.path.exists(model_path):
+                logger.error(f"Model file not found: {model_path}")
+                return
+                
             logger.info(f"Initializing ONNX runner for {self.model_name} on {self.device}")
-            self.runner = ONNXModelRunner(
-                model_path,
-                self.device,
-                self.model_size,
-            )
+            try:
+                self.runner = ONNXModelRunner(
+                    model_path,
+                    self.device,
+                    self.model_size,
+                )
+                if self.runner is None:
+                    logger.error(f"Failed to initialize ONNX runner for {self.model_name}")
+                else:
+                    input_names = self.runner.get_input_names()
+                    logger.debug(f"Model {self.model_name} initialized with input names: {input_names}")
+            except Exception as e:
+                logger.error(f"Error initializing ONNX runner for {self.model_name}: {str(e)}")
+                self.runner = None
 
     def _load_tokenizer(self):
         tokenizer_path = os.path.join(f"{MODEL_CACHE_DIR}/{self.model_name}/tokenizer")
@@ -231,15 +246,78 @@ class GenericONNXEmbedding:
             frame = np.expand_dims(frame, axis=0)
             return [{"input_2": frame}]
         elif self.model_type == ModelTypeEnum.lp_detect:
+            logger.debug(f"Preprocessing {len(raw_inputs)} images for license plate detection")
             preprocessed = []
-            for img in raw_inputs:
-                # Add batch dimension and channel dimension if needed
-                if len(img.shape) == 2:  # Grayscale
-                    img = np.expand_dims(img, axis=0)
-                    img = np.expand_dims(img, axis=0)
-                elif len(img.shape) == 3:  # RGB
-                    img = np.expand_dims(img, axis=0)
-                preprocessed.append({"input": img.astype(np.float32)})
+            for idx, img in enumerate(raw_inputs):
+                try:
+                    logger.debug(f"Processing image {idx} with shape: {img.shape}, dtype: {img.dtype}")
+                    
+                    # Ensure input is uint8 before normalization
+                    if img.dtype != np.uint8:
+                        logger.warning(f"Image {idx} has unexpected dtype: {img.dtype}, expected uint8")
+                        continue
+                        
+                    # Convert to BGR if needed (WPOD-NET expects BGR input)
+                    if len(img.shape) == 2:
+                        logger.debug(f"Converting grayscale image {idx} to BGR")
+                        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                    elif len(img.shape) == 3:
+                        if img.shape[2] == 4:
+                            logger.debug(f"Converting RGBA image {idx} to BGR")
+                            img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+                        elif img.shape[2] == 3 and img.dtype == np.uint8:
+                            # Assume it's already BGR since that's OpenCV's default
+                            pass
+                        else:
+                            logger.warning(f"Image {idx} has unexpected format: channels={img.shape[2]}")
+                            continue
+                    
+                    # Calculate resize dimensions
+                    h, w = img.shape[:2]
+                    ratio = float(max(h, w))/min(h, w)
+                    side = int(ratio * 288.)  # Base size from example implementation
+                    bound_dim = min(side + (side % (2**4)), 608)
+                    
+                    # Calculate resize factor
+                    factor = min(bound_dim / max(h, w), 1.0)
+                    resize_h = max(int(round(int(h * factor) / 32) * 32), 32)
+                    resize_w = max(int(round(int(w * factor) / 32) * 32), 32)
+                    
+                    # Pad to multiple of stride
+                    resize_w += (WPOD_STRIDE - resize_w % WPOD_STRIDE) if resize_w % WPOD_STRIDE != 0 else 0
+                    resize_h += (WPOD_STRIDE - resize_h % WPOD_STRIDE) if resize_h % WPOD_STRIDE != 0 else 0
+                    
+                    logger.debug(f"Resizing image {idx} from {h}x{w} to {resize_h}x{resize_w}")
+                    
+                    # Resize image
+                    resized = cv2.resize(img, (resize_w, resize_h))
+                    
+                    # Normalize to 0-1 range (im2single equivalent)
+                    normalized = resized.astype(np.float32) / 255.0
+                    
+                    # WPOD-NET expects input in NCHW format
+                    normalized = normalized.transpose(2, 0, 1)  # HWC to CHW
+                    normalized = np.expand_dims(normalized, axis=0)  # Add batch dimension -> NCHW
+                    
+                    # Verify dimensions and ranges
+                    if normalized.shape[1] != 3:
+                        logger.error(f"Image {idx} has wrong number of channels after preprocessing: {normalized.shape[1]}")
+                        continue
+                        
+                    if not (0 <= normalized.min() <= normalized.max() <= 1.0):
+                        logger.warning(f"Image {idx} values outside expected range: [{normalized.min():.3f}, {normalized.max():.3f}]")
+                    
+                    logger.debug(f"Preprocessed image {idx} shape: {normalized.shape}, value range: [{normalized.min():.3f}, {normalized.max():.3f}]")
+                    preprocessed.append({"input": normalized})
+                except Exception as e:
+                    logger.error(f"Error preprocessing image {idx}: {str(e)}")
+                    continue
+                    
+            if not preprocessed:
+                logger.error("No images were successfully preprocessed for license plate detection")
+            else:
+                logger.debug(f"Successfully preprocessed {len(preprocessed)} images")
+                
             return preprocessed
         elif self.model_type == ModelTypeEnum.lpr_detect:
             preprocessed = []

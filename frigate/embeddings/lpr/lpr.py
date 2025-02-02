@@ -168,14 +168,39 @@ class LicensePlateRecognition:
         logger.debug(f"Input image shape: {image.shape}")
         
         plate_points = self.detect(image)
-        logger.debug(f"Detected plate points: {len(plate_points)}")
+        logger.debug(f"Detected {len(plate_points)} potential license plates")
         
         if len(plate_points) == 0:
             return [], [], []
 
+        # Sort plates by position (top-to-bottom, left-to-right)
         plate_points = self.sort_polygon(list(plate_points))
-        plate_images = [self._crop_license_plate(image, x) for x in plate_points]
-        rotated_images, _ = self.classify(plate_images)
+        
+        # Extract and preprocess plate images
+        plate_images = []
+        for i, points in enumerate(plate_points):
+            try:
+                plate_img = self._crop_license_plate(image, points)
+                if plate_img is not None:
+                    logger.debug(f"Extracted plate {i} with shape: {plate_img.shape}")
+                    plate_images.append(plate_img)
+                else:
+                    logger.warning(f"Failed to extract plate {i}")
+            except Exception as e:
+                logger.error(f"Error extracting plate {i}: {str(e)}")
+                continue
+
+        if not plate_images:
+            logger.debug("No valid plate images extracted")
+            return [], [], []
+
+        # Classify plate orientations
+        try:
+            rotated_images, classifications = self.classify(plate_images)
+            logger.debug(f"Classified {len(classifications)} plates")
+        except Exception as e:
+            logger.error(f"Error during plate classification: {str(e)}")
+            return [], [], []
 
         # keep track of the index of each image for correct area calc later
         sorted_indices = np.argsort([x.shape[1] / x.shape[0] for x in rotated_images])
@@ -183,7 +208,13 @@ class LicensePlateRecognition:
             idx: original_idx for original_idx, idx in enumerate(sorted_indices)
         }
 
-        results, confidences = self.recognize(rotated_images)
+        # Recognize text on plates
+        try:
+            results, confidences = self.recognize(rotated_images)
+            logger.debug(f"Recognized text on {len(results)} plates")
+        except Exception as e:
+            logger.error(f"Error during text recognition: {str(e)}")
+            return [], [], []
 
         if results:
             license_plates = [""] * len(rotated_images)
@@ -211,6 +242,8 @@ class LicensePlateRecognition:
                 average_confidences[original_idx] = average_confidence
                 areas[original_idx] = area
 
+                logger.debug(f"Plate {original_idx}: text='{plate}', confidence={np.mean(average_confidence):.3f}, area={area}")
+
             # Filter out plates that have a length of less than 3 characters
             # Sort by area, then by plate length, then by confidence all desc
             sorted_data = sorted(
@@ -226,8 +259,10 @@ class LicensePlateRecognition:
             )
 
             if sorted_data:
+                logger.debug(f"Final results: {len(sorted_data)} valid plates found")
                 return map(list, zip(*sorted_data))
 
+        logger.debug("No valid license plates found")
         return [], [], []
 
     def resize_image(self, image: np.ndarray) -> np.ndarray:
