@@ -430,6 +430,9 @@ class EmbeddingMaintainer(threading.Thread):
             return None
 
         try:
+            # Initialize start time for measuring detection speed
+            start = datetime.datetime.now().timestamp()
+            
             # Get original dimensions
             height, width = input.shape[:2]
             min_dim = min(height, width)
@@ -528,6 +531,7 @@ class EmbeddingMaintainer(threading.Thread):
                         return None
                     
                     logger.debug("Detected license plate with confidence: %.2f", best_det.prob)
+                    
                     duration = datetime.datetime.now().timestamp() - start
                     self.metrics.lpd_fps.value = (
                         self.metrics.lpd_fps.value * 9 + duration
