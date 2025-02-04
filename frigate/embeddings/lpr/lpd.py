@@ -174,14 +174,19 @@ class LicensePlateDetector:
         if len(processed.shape) != 4:
             logger.error(f"Processed image must be 4D (batch, channels/height, height/width, width/channels), got shape: {processed.shape}")
             return {"detections": [], "plates": []}
-            
+        
         # Run inference
         try:
             logger.debug("Running WPOD-NET inference...")
-            outputs = self.session.run(None, {"input": processed})[0]
+            # Create feed dictionary matching input name
+            feed = dict([(input.name, processed) for input in self.session.get_inputs()])
+            outputs = self.session.run(None, feed)[0]
+            
+            # Remove batch dimension if present
             if outputs.ndim == 4:
                 outputs = outputs[0]  # Remove batch dimension
             logger.debug(f"Inference output shape: {outputs.shape}")
+            
         except Exception as e:
             logger.error(f"Error running WPOD-NET inference: {e}")
             logger.error(f"Processed image shape: {processed.shape}, dtype: {processed.dtype}")
@@ -303,7 +308,7 @@ class LicensePlateDetector:
             image: Input image in BGR format (height x width x 3)
             
         Returns:
-            - Preprocessed image in format expected by model
+            - Preprocessed image in NHWC format (1, height, width, channels)
             - Original shape (H, W)
             - New size (W, H)
         """
@@ -312,6 +317,7 @@ class LicensePlateDetector:
         if image.size == 0:
             raise ValueError("Empty image provided")
 
+        # Get original dimensions
         orig_h, orig_w = image.shape[:2]
         min_dim = min(orig_h, orig_w)
         factor = float(self.max_dimension) / min_dim
@@ -325,38 +331,47 @@ class LicensePlateDetector:
             new_h += self.net_stride - (new_h % self.net_stride)
         new_size = (new_w, new_h)
         
+        logger.debug(f"Resizing image from {(orig_h, orig_w)} to {(new_h, new_w)}")
+        
         # Resize and normalize
         resized = cv2.resize(image, new_size)
         resized = resized.astype(np.float32) / 255.0
         
-        # Check model input format
+        # Get model's input shape
         input_shape = self.session.get_inputs()[0].shape
-        logger.debug(f"Model expects input shape: {input_shape}")
+        logger.debug(f"Model input shape: {input_shape}")
         
-        # Handle dynamic dimensions by forcing specific dimensions
+        # Handle dynamic dimensions while keeping NHWC format
         if any(isinstance(dim, str) for dim in input_shape):
-            logger.debug("Model has dynamic dimensions, forcing to specific sizes")
-            # Force batch size of 1
-            target_h = new_h
-            target_w = new_w
-            
-            if input_shape[-1] == 3:  # NHWC format
-                logger.debug(f"Using NHWC format with forced dimensions: [1, {target_h}, {target_w}, 3]")
-                processed = resized[np.newaxis, ...]  # Add batch dimension
-            else:  # NCHW format
-                logger.debug(f"Using NCHW format with forced dimensions: [1, 3, {target_h}, {target_w}]")
-                processed = resized.transpose((2, 0, 1))[np.newaxis, ...]  # Convert to NCHW
+            # We know the format is [N, M1, M2, 3] where:
+            # N = batch size (we use 1)
+            # M1 = height (use our resized height)
+            # M2 = width (use our resized width)
+            # 3 = channels (fixed)
+            if input_shape[-1] != 3:
+                raise ValueError(f"Expected 3 channels in last dimension, got {input_shape[-1]}")
+                
+            logger.debug(f"Using dynamic dimensions: [1, {new_h}, {new_w}, 3]")
+            processed = resized.reshape(1, new_h, new_w, 3)
         else:
-            # Static dimensions - use the model's expected shape
-            if input_shape[-1] == 3:  # NHWC format
-                processed = np.expand_dims(resized, axis=0)
-                logger.debug(f"Using NHWC format, processed shape: {processed.shape}")
-            else:  # NCHW format
-                processed = resized.transpose((2, 0, 1))
-                processed = np.expand_dims(processed, axis=0)
-                logger.debug(f"Using NCHW format, processed shape: {processed.shape}")
-        
+            # For fixed dimensions, ensure we match them
+            target_h = input_shape[1] if len(input_shape) > 1 else new_h
+            target_w = input_shape[2] if len(input_shape) > 2 else new_w
+            if target_h != new_h or target_w != new_w:
+                logger.debug(f"Resizing to match fixed dimensions: {target_h}x{target_w}")
+                resized = cv2.resize(resized, (target_w, target_h))
+            processed = resized.reshape(1, target_h, target_w, 3)
+            
         logger.debug(f"Final processed shape: {processed.shape}")
+        
+        # Final validation
+        if processed.shape[0] != 1:
+            raise ValueError(f"Batch dimension must be 1, got {processed.shape[0]}")
+        if processed.shape[-1] != 3:
+            raise ValueError(f"Channel dimension must be 3, got {processed.shape[-1]}")
+        if processed.shape[1] % self.net_stride != 0 or processed.shape[2] % self.net_stride != 0:
+            raise ValueError(f"Height and width must be multiples of {self.net_stride}")
+            
         return processed, (orig_h, orig_w), new_size
 
     def _detect_plates(self, original_img: np.ndarray, processed_img: np.ndarray, 
