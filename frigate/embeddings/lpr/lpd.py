@@ -118,6 +118,15 @@ class LicensePlateDetector:
             input_details = self.session.get_inputs()
             logger.info(f"LPR: Model input details: {[input.name + ': ' + str(input.shape) for input in input_details]}")
             
+            # Validate model input format
+            input_shape = input_details[0].shape
+            if len(input_shape) != 4:
+                raise ValueError(f"Model must have 4D input shape, got {len(input_shape)}D: {input_shape}")
+            if input_shape[1] != 3 and input_shape[-1] != 3:
+                raise ValueError(f"Model must have 3 channels, shape: {input_shape}")
+            if any(isinstance(dim, str) for dim in input_shape):
+                logger.warning("Model has dynamic dimensions which may cause issues: {input_shape}")
+            
         except Exception as e:
             logger.error(f"LPR: Failed to load ONNX model: {str(e)}")
             raise
@@ -158,20 +167,14 @@ class LicensePlateDetector:
         
         # Get input shape from model
         input_shape = self.session.get_inputs()[0].shape
-        if len(input_shape) != 4:  # Should be [batch_size, channels, height, width]
-            logger.error(f"Unexpected input shape from model: {input_shape}")
-            raise ValueError(f"Unexpected input shape from model: {input_shape}")
-            
-        # Ensure processed image matches expected shape
-        if processed.shape[1:] != tuple(input_shape[1:]):  # Compare everything except batch size
-            logger.warning(f"Resizing input from {processed.shape} to match model input {input_shape}")
-            # Resize to match expected dimensions
-            if len(processed.shape) == 3:  # Add batch dimension if missing
-                processed = np.expand_dims(processed, axis=0)
-            processed = cv2.resize(processed[0].transpose(1, 2, 0), 
-                                 (input_shape[3], input_shape[2])).transpose(2, 0, 1)
-            processed = np.expand_dims(processed, axis=0)
+        logger.debug(f"Model input shape: {input_shape}")
+        logger.debug(f"Processed image shape: {processed.shape}")
         
+        # Validate processed image shape
+        if len(processed.shape) != 4:
+            logger.error(f"Processed image must be 4D (batch, channels/height, height/width, width/channels), got shape: {processed.shape}")
+            return {"detections": [], "plates": []}
+            
         # Run inference
         try:
             logger.debug("Running WPOD-NET inference...")
@@ -181,6 +184,7 @@ class LicensePlateDetector:
             logger.debug(f"Inference output shape: {outputs.shape}")
         except Exception as e:
             logger.error(f"Error running WPOD-NET inference: {e}")
+            logger.error(f"Processed image shape: {processed.shape}, dtype: {processed.dtype}")
             return {"detections": [], "plates": []}
         
         # Post-process
@@ -299,7 +303,7 @@ class LicensePlateDetector:
             image: Input image in BGR format (height x width x 3)
             
         Returns:
-            - Preprocessed image in NCHW format
+            - Preprocessed image in format expected by model
             - Original shape (H, W)
             - New size (W, H)
         """
@@ -324,10 +328,35 @@ class LicensePlateDetector:
         # Resize and normalize
         resized = cv2.resize(image, new_size)
         resized = resized.astype(np.float32) / 255.0
-        # Convert to CHW format and add batch dimension to get NCHW
-        processed = np.transpose(resized, (2, 0, 1))
-        processed = np.expand_dims(processed, axis=0)
         
+        # Check model input format
+        input_shape = self.session.get_inputs()[0].shape
+        logger.debug(f"Model expects input shape: {input_shape}")
+        
+        # Handle dynamic dimensions by forcing specific dimensions
+        if any(isinstance(dim, str) for dim in input_shape):
+            logger.debug("Model has dynamic dimensions, forcing to specific sizes")
+            # Force batch size of 1
+            target_h = new_h
+            target_w = new_w
+            
+            if input_shape[-1] == 3:  # NHWC format
+                logger.debug(f"Using NHWC format with forced dimensions: [1, {target_h}, {target_w}, 3]")
+                processed = resized[np.newaxis, ...]  # Add batch dimension
+            else:  # NCHW format
+                logger.debug(f"Using NCHW format with forced dimensions: [1, 3, {target_h}, {target_w}]")
+                processed = resized.transpose((2, 0, 1))[np.newaxis, ...]  # Convert to NCHW
+        else:
+            # Static dimensions - use the model's expected shape
+            if input_shape[-1] == 3:  # NHWC format
+                processed = np.expand_dims(resized, axis=0)
+                logger.debug(f"Using NHWC format, processed shape: {processed.shape}")
+            else:  # NCHW format
+                processed = resized.transpose((2, 0, 1))
+                processed = np.expand_dims(processed, axis=0)
+                logger.debug(f"Using NCHW format, processed shape: {processed.shape}")
+        
+        logger.debug(f"Final processed shape: {processed.shape}")
         return processed, (orig_h, orig_w), new_size
 
     def _detect_plates(self, original_img: np.ndarray, processed_img: np.ndarray, 
