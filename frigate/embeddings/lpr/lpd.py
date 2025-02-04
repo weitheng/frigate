@@ -105,12 +105,28 @@ class LicensePlateDetector:
         logger.info(f"Initializing LicensePlateDetector with model: {model_path}")
         logger.info(f"Parameters: confidence_threshold={confidence_threshold}, max_dimension={max_dimension}, nms_threshold={nms_threshold}")
         
-        self.session = onnxruntime.InferenceSession(model_path)
+        if not os.path.exists(model_path):
+            logger.error(f"LPR: Model file not found at {model_path}")
+            raise FileNotFoundError(f"Model file not found at {model_path}")
+            
+        try:
+            logger.info("LPR: Loading ONNX model...")
+            self.session = onnxruntime.InferenceSession(model_path)
+            logger.info("LPR: ONNX model loaded successfully")
+            
+            # Log model input details
+            input_details = self.session.get_inputs()
+            logger.info(f"LPR: Model input details: {[input.name + ': ' + str(input.shape) for input in input_details]}")
+            
+        except Exception as e:
+            logger.error(f"LPR: Failed to load ONNX model: {str(e)}")
+            raise
+        
         self.confidence_threshold = confidence_threshold or 0.5  # Default if not in config
         self.max_dimension = max_dimension
         self.nms_threshold = nms_threshold or 0.1  # Default if not in config
         self.net_stride = 16
-        logger.info("LicensePlateDetector initialized successfully")
+        logger.info("LPR: LicensePlateDetector initialized successfully")
 
     def detect(self, image: np.ndarray) -> dict:
         """

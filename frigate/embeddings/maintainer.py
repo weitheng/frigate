@@ -410,24 +410,31 @@ class EmbeddingMaintainer(threading.Thread):
         self, obj_data: dict[str, any], frame: np.ndarray
     ) -> bool:
         """Look for license plates in image."""
+        logger.info("LPR: Entering license plate processing")  # Higher level log
+        
         id = obj_data["id"]
         logger.debug(f"Processing license plate for object {id}")
 
+        # Log the object data to help diagnose
+        logger.debug(f"Object data: label={obj_data.get('label')}, "
+                    f"stationary={obj_data.get('stationary')}, "
+                    f"sub_label={obj_data.get('sub_label')}")
+
         # don't run for non car objects
         if obj_data.get("label") != "car":
-            logger.debug(f"Skipping license plate processing - object {id} is not a car")
+            logger.info(f"LPR: Skipping - object {id} is not a car (label: {obj_data.get('label')})")  # Higher level log
             return False
 
         # don't run for stationary car objects
         if obj_data.get("stationary") == True:
-            logger.debug(f"Skipping license plate processing - car {id} is stationary")
+            logger.info(f"LPR: Skipping - car {id} is stationary")  # Higher level log
             return False
 
         # don't overwrite sub label for objects that have a sub label
         # that is not a license plate
         if obj_data.get("sub_label") and id not in self.detected_license_plates:
-            logger.debug(
-                f"Skipping license plate processing for {id} - existing sub label: {obj_data.get('sub_label')}"
+            logger.info(  # Higher level log
+                f"LPR: Skipping - {id} has existing sub label: {obj_data.get('sub_label')}"
             )
             return False
 
