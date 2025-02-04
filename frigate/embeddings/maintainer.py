@@ -364,17 +364,22 @@ class EmbeddingMaintainer(threading.Thread):
         Returns:
             Optional[dict[str, any]]: Dictionary containing detection info or None if no plate found
         """
+        logger.debug("Starting license plate detection with WPOD-NET...")
+        
         if self.license_plate_recognition.lpd_model is None:
-            logger.debug("License plate detector model not loaded")
+            logger.warning("License plate detector model not loaded")
             return None
 
         # Convert to BGR for WPOD-NET
+        logger.debug(f"Converting input image (shape: {input.shape}) from RGB to BGR")
         input_bgr = cv2.cvtColor(input, cv2.COLOR_RGB2BGR)
         
         # Run WPOD-NET model using the public detect() method
+        logger.debug("Running WPOD-NET detection...")
         results = self.license_plate_recognition.lpd_model([input_bgr])
         detections = results.get('detections', [])
         if not detections:
+            logger.debug("No license plates detected by WPOD-NET")
             return None
 
         # Get the highest confidence detection
@@ -382,39 +387,47 @@ class EmbeddingMaintainer(threading.Thread):
         plate_idx = detections.index(best_detection)
         plates = results.get('plates', [])
         plate_img = plates[plate_idx] if plate_idx < len(plates) else None
+        
+        logger.debug(f"Found best detection with confidence: {best_detection['confidence']:.3f}")
 
         # Convert points to box format [left, top, right, bottom]
         points = np.array(best_detection['points'])
         left, top = np.min(points, axis=0)
         right, bottom = np.max(points, axis=0)
         
-        return {
+        result = {
             'box': [int(left), int(top), int(right), int(bottom)],
             'score': float(best_detection['confidence']),
             'plate_img': plate_img
         }
+        logger.debug(f"Detected plate box: {result['box']}, score: {result['score']:.3f}")
+        if plate_img is not None:
+            logger.debug(f"Extracted plate image shape: {plate_img.shape}")
+        
+        return result
 
     def _process_license_plate(
         self, obj_data: dict[str, any], frame: np.ndarray
     ) -> bool:
         """Look for license plates in image."""
         id = obj_data["id"]
+        logger.debug(f"Processing license plate for object {id}")
 
         # don't run for non car objects
         if obj_data.get("label") != "car":
-            logger.debug("Not a processing license plate for non car object.")
+            logger.debug(f"Skipping license plate processing - object {id} is not a car")
             return False
 
         # don't run for stationary car objects
         if obj_data.get("stationary") == True:
-            logger.debug("Not a processing license plate for a stationary car object.")
+            logger.debug(f"Skipping license plate processing - car {id} is stationary")
             return False
 
         # don't overwrite sub label for objects that have a sub label
         # that is not a license plate
         if obj_data.get("sub_label") and id not in self.detected_license_plates:
             logger.debug(
-                f"Not processing license plate due to existing sub label: {obj_data.get('sub_label')}."
+                f"Skipping license plate processing for {id} - existing sub label: {obj_data.get('sub_label')}"
             )
             return False
 
@@ -422,31 +435,35 @@ class EmbeddingMaintainer(threading.Thread):
         license_plate_frame = None
 
         if self.requires_license_plate_detection:
-            logger.debug("Running manual license_plate detection.")
+            logger.debug(f"Running manual license plate detection for object {id}")
             car_box = obj_data.get("box")
 
             if not car_box:
+                logger.warning(f"No car box found for object {id}")
                 return False
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_YUV2RGB_I420)
             left, top, right, bottom = car_box
             car = rgb[top:bottom, left:right]
+            logger.debug(f"Extracted car region shape: {car.shape}")
             
             # Detect license plate using WPOD-NET
             license_plate = self._detect_license_plate(car)
 
             if not license_plate:
-                logger.debug("Detected no license plates for car object.")
+                logger.debug(f"No license plates detected for car object {id}")
                 return False
 
             # Use the warped plate image from WPOD-NET
             license_plate_frame = license_plate['plate_img']
+            logger.debug(f"Using WPOD-NET warped plate image for {id}")
         else:
             # don't run for object without attributes
             if not obj_data.get("current_attributes"):
-                logger.debug("No attributes to parse.")
+                logger.debug(f"No attributes to parse for object {id}")
                 return False
 
+            logger.debug(f"Processing attributes for object {id}")
             attributes: list[dict[str, any]] = obj_data.get("current_attributes", [])
             for attr in attributes:
                 if attr.get("label") != "license_plate":
@@ -456,9 +473,11 @@ class EmbeddingMaintainer(threading.Thread):
                     "score", 0.0
                 ):
                     license_plate = attr
+                    logger.debug(f"Found license plate attribute with score: {attr.get('score', 0.0)}")
 
             # no license plates detected in this frame
             if not license_plate:
+                logger.debug(f"No license plate attributes found for object {id}")
                 return False
 
             license_plate_box = license_plate.get("box")
@@ -468,7 +487,8 @@ class EmbeddingMaintainer(threading.Thread):
                 not license_plate_box
                 or area(license_plate_box) < self.config.lpr.min_area
             ):
-                logger.debug(f"Invalid license plate box {license_plate}")
+                logger.debug(f"Invalid license plate box for {id}: {license_plate_box}, "
+                           f"min area: {self.config.lpr.min_area}")
                 return False
 
             license_plate_frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_I420)
@@ -476,9 +496,10 @@ class EmbeddingMaintainer(threading.Thread):
                 license_plate_box[1] : license_plate_box[3],
                 license_plate_box[0] : license_plate_box[2],
             ]
+            logger.debug(f"Extracted license plate frame shape: {license_plate_frame.shape}")
 
         if license_plate_frame is None:
-            logger.debug("No valid license plate frame to process")
+            logger.warning(f"No valid license plate frame to process for object {id}")
             return False
 
         # run detection, returns results sorted by confidence, best first
@@ -488,14 +509,18 @@ class EmbeddingMaintainer(threading.Thread):
             try:
                 lpd_debug_dir = os.path.join(CLIPS_DIR, "lpd")
                 os.makedirs(lpd_debug_dir, exist_ok=True)
-                cv2.imwrite(os.path.join(lpd_debug_dir, f"plate_{id}.jpg"), license_plate_frame)
+                debug_path = os.path.join(lpd_debug_dir, f"plate_{id}.jpg")
+                cv2.imwrite(debug_path, license_plate_frame)
+                logger.debug(f"Saved debug license plate image to: {debug_path}")
             except Exception as e:
-                logger.warning(f"Failed to save license plate debug image: {e}")
+                logger.warning(f"Failed to save license plate debug image for {id}: {e}")
 
+        logger.debug(f"Running OCR on license plate frame for object {id}")
         license_plates, confidences, areas = (
             self.license_plate_recognition.process_license_plate(license_plate_frame, id)
         )
 
+        logger.debug(f"OCR results for {id}:")
         logger.debug(f"Text boxes: {license_plates}")
         logger.debug(f"Confidences: {confidences}")
         logger.debug(f"Areas: {areas}")
@@ -507,11 +532,12 @@ class EmbeddingMaintainer(threading.Thread):
                 )
 
                 logger.debug(
-                    f"Detected text: {plate} (average confidence: {avg_confidence:.2f}, area: {text_area} pixels)"
+                    f"Object {id} - Detected text: {plate} "
+                    f"(average confidence: {avg_confidence:.2f}, area: {text_area} pixels)"
                 )
         else:
             # no plates found
-            logger.debug("No text detected")
+            logger.debug(f"No text detected for object {id}")
             return True
 
         top_plate, top_char_confidences, top_area = (

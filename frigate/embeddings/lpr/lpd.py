@@ -102,11 +102,15 @@ class LicensePlateDetector:
             max_dimension: Maximum dimension for input image preprocessing (default: 608)
             nms_threshold: IOU threshold for non-maximum suppression (default: 0.1)
         """
+        logger.info(f"Initializing LicensePlateDetector with model: {model_path}")
+        logger.info(f"Parameters: confidence_threshold={confidence_threshold}, max_dimension={max_dimension}, nms_threshold={nms_threshold}")
+        
         self.session = onnxruntime.InferenceSession(model_path)
         self.confidence_threshold = confidence_threshold or 0.5  # Default if not in config
         self.max_dimension = max_dimension
         self.nms_threshold = nms_threshold or 0.1  # Default if not in config
         self.net_stride = 16
+        logger.info("LicensePlateDetector initialized successfully")
 
     def detect(self, image: np.ndarray) -> dict:
         """
@@ -123,16 +127,23 @@ class LicensePlateDetector:
             - plates: List of warped plate images ready for OCR
             - inference_time: (optional) Model inference time in seconds
         """
+        start_time = time.time()
+        logger.debug(f"Starting license plate detection on image shape: {image.shape}")
+
         # Ensure input is BGR
         if len(image.shape) != 3 or image.shape[2] != 3:
+            logger.error(f"Invalid input image shape: {image.shape}")
             raise ValueError("Input must be BGR image with shape HxWx3")
             
         # Preprocess
-        processed, orig_shape, _ = self._preprocess_image(image)
+        logger.debug("Preprocessing image...")
+        processed, orig_shape, new_size = self._preprocess_image(image)
+        logger.debug(f"Preprocessed image from {orig_shape} to {new_size}")
         
         # Get input shape from model
         input_shape = self.session.get_inputs()[0].shape
         if len(input_shape) != 4:  # Should be [batch_size, channels, height, width]
+            logger.error(f"Unexpected input shape from model: {input_shape}")
             raise ValueError(f"Unexpected input shape from model: {input_shape}")
             
         # Ensure processed image matches expected shape
@@ -147,30 +158,44 @@ class LicensePlateDetector:
         
         # Run inference
         try:
+            logger.debug("Running WPOD-NET inference...")
             outputs = self.session.run(None, {"input": processed})[0]
             if outputs.ndim == 4:
                 outputs = outputs[0]  # Remove batch dimension
+            logger.debug(f"Inference output shape: {outputs.shape}")
         except Exception as e:
             logger.error(f"Error running WPOD-NET inference: {e}")
             return {"detections": [], "plates": []}
         
         # Post-process
+        logger.debug("Post-processing detections...")
         labels = self._detect_plates(image, processed, outputs)
+        logger.debug(f"Found {len(labels)} potential license plates")
         
         # Prepare results
         detections = []
         plates = []
-        for label in labels:
+        for i, label in enumerate(labels):
             # Add detection info
-            detections.append({
+            detection_info = {
                 'points': label.pts.T.tolist(),
                 'confidence': float(label.prob()),
                 'center': label.cc().tolist(),
                 'width': int(label.wh()[0]),
                 'height': int(label.wh()[1])
-            })
+            }
+            detections.append(detection_info)
+            logger.debug(f"Detection {i+1}: confidence={detection_info['confidence']:.3f}, "
+                      f"width={detection_info['width']}, height={detection_info['height']}")
+            
             # Add warped plate
-            plates.append(self._warp_plate(image, label))
+            plate = self._warp_plate(image, label)
+            plates.append(plate)
+            logger.debug(f"Warped plate {i+1} shape: {plate.shape}")
+        
+        inference_time = time.time() - start_time
+        logger.info(f"License plate detection completed in {inference_time:.3f}s. "
+                   f"Found {len(detections)} plates.")
         
         return {
             'detections': detections,
@@ -302,19 +327,23 @@ class LicensePlateDetector:
         Returns:
             List of DLabel objects for detected plates
         """
+        logger.debug("Starting plate detection from model output...")
+        
         # Extract probability scores and affine parameters
         probs = model_output[..., 0]
         affines = model_output[..., 2:]
         
         # Get detections above threshold
         ys, xs = np.where(probs > self.confidence_threshold)
+        logger.debug(f"Found {len(ys)} points above confidence threshold {self.confidence_threshold}")
         
         labels = []
-        for grid_y, grid_x in zip(ys, xs):
+        for i, (grid_y, grid_x) in enumerate(zip(ys, xs)):
             affine = affines[grid_y, grid_x]
             prob = probs[grid_y, grid_x]
             
             if np.isnan(affine).any():
+                logger.warning(f"Skipping detection {i+1} due to NaN values in affine parameters")
                 continue
                 
             # Get plate corners
@@ -329,9 +358,12 @@ class LicensePlateDetector:
             
             # Create DLabel
             labels.append(DLabel(0, pts, prob))
+            logger.debug(f"Detection {i+1}: confidence={prob:.3f}, points shape={pts.shape}")
             
         # Apply NMS
-        return self._non_max_suppression(labels)
+        filtered_labels = self._non_max_suppression(labels)
+        logger.debug(f"After NMS: {len(filtered_labels)} detections remaining")
+        return filtered_labels
 
     def _warp_plate(self, img: np.ndarray, label: DLabel) -> np.ndarray:
         """
