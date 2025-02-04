@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import requests
 from PIL import Image
+import cv2
 
 # importing this without pytorch or others causes a warning
 # https://github.com/huggingface/transformers/issues/27214
@@ -20,6 +21,7 @@ from frigate.const import MODEL_CACHE_DIR, UPDATE_MODEL_STATE
 from frigate.types import ModelStatusTypesEnum
 from frigate.util.downloader import ModelDownloader
 from frigate.util.model import ONNXModelRunner
+from frigate.embeddings.lpr.lpd import LicensePlateDetector
 
 warnings.filterwarnings(
     "ignore",
@@ -38,6 +40,7 @@ class ModelTypeEnum(str, Enum):
     face = "face"
     vision = "vision"
     text = "text"
+    lp_detect = "lp_detect"  # WPOD-NET model
     lpr_detect = "lpr_detect"
     lpr_classify = "lpr_classify"
     lpr_recognize = "lpr_recognize"
@@ -95,6 +98,15 @@ class GenericONNXEmbedding:
             self._load_model_and_utils()
             logger.debug(f"models are already downloaded for {self.model_name}")
 
+        # Initialize LicensePlateDetector for WPOD-NET
+        if self.model_type == ModelTypeEnum.lp_detect:
+            self.lpd = LicensePlateDetector(
+                os.path.join(self.download_path, self.model_file),
+                confidence_threshold=0.5,  # These can be made configurable
+                max_dimension=608,
+                nms_threshold=0.1
+            )
+
     def _download_model(self, path: str):
         try:
             file_name = os.path.basename(path)
@@ -141,6 +153,8 @@ class GenericONNXEmbedding:
             elif self.model_type == ModelTypeEnum.vision:
                 self.feature_extractor = self._load_feature_extractor()
             elif self.model_type == ModelTypeEnum.face:
+                self.feature_extractor = []
+            elif self.model_type == ModelTypeEnum.lp_detect:
                 self.feature_extractor = []
             elif self.model_type == ModelTypeEnum.lpr_detect:
                 self.feature_extractor = []
@@ -256,12 +270,20 @@ class GenericONNXEmbedding:
         self._load_model_and_utils()
         if self.runner is None or (
             self.tokenizer is None and self.feature_extractor is None
+            and self.model_type not in [ModelTypeEnum.lp_detect]  # WPOD-NET doesn't need these
         ):
             logger.error(
                 f"{self.model_name} model or tokenizer/feature extractor is not loaded."
             )
             return []
 
+        # Special handling for WPOD-NET which manages its own pipeline
+        if self.model_type == ModelTypeEnum.lp_detect:
+            if len(inputs) != 1:
+                raise ValueError("WPOD-NET supports single input only. Batch inputs are not supported.")
+            return self.lpd.detect(inputs[0])
+
+        # Standard ONNX pipeline for other models
         processed_inputs = self._preprocess_inputs(inputs)
         input_names = self.runner.get_input_names()
         onnx_inputs = {name: [] for name in input_names}
@@ -277,5 +299,6 @@ class GenericONNXEmbedding:
             else:
                 logger.warning(f"Expected input '{key}' not found in onnx_inputs")
 
+        # Handle other model types
         embeddings = self.runner.run(onnx_inputs)[0]
         return [embedding for embedding in embeddings]

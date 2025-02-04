@@ -32,7 +32,7 @@ import {
   MobilePageTitle,
 } from "@/components/mobile/MobilePage";
 
-const LPR_TABS = ["details", "snapshot", "video", "raw"] as const;
+const LPR_TABS = ["details", "snapshot", "video", "raw", "lpd"] as const;
 export type LPRTab = (typeof LPR_TABS)[number];
 
 type LPRDetailDialogProps = {
@@ -152,7 +152,8 @@ export default function LPRDetailDialog({
                     {item === "snapshot" && <FaImage className="size-4" />}
                     {item === "video" && <FaVideo className="size-4" />}
                     {item === "raw" && <FaImage className="size-4" />}
-                    <div className="capitalize">{item}</div>
+                    {item === "lpd" && <FaImage className="size-4" />}
+                    <div className="capitalize">{item === "lpd" ? "WPOD-NET" : item}</div>
                   </ToggleGroupItem>
                 ))}
               </ToggleGroup>
@@ -166,11 +167,8 @@ export default function LPRDetailDialog({
             {page === "details" && <DetailsTab event={event} timestamp={timestamp} />}
             {page === "snapshot" && <SnapshotTab event={event} />}
             {page === "video" && <VideoTab event={event} />}
-            {page === "raw" && (
-              <PlateTab
-                lprImage={rawImage}
-              />
-            )}
+            {page === "raw" && <PlateTab lprImage={rawImage} />}
+            {page === "lpd" && <PlateTab lprImage={`plate_${event.id}.jpg`} />}
           </>
         ) : (
           <PlateTab lprImage={lprImage} />

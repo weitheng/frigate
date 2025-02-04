@@ -354,10 +354,45 @@ class EmbeddingMaintainer(threading.Thread):
         if event_id:
             self.handle_regenerate_description(event_id, source)
 
-    def _detect_license_plate(self, input: np.ndarray) -> tuple[int, int, int, int]:
-        """Return the dimensions of the input image as [x, y, width, height]."""
-        height, width = input.shape[:2]
-        return (0, 0, width, height)
+    def _detect_license_plate(self, input: np.ndarray) -> Optional[dict[str, any]]:
+        """
+        Detect license plates in the input image using WPOD-NET.
+        
+        Args:
+            input (np.ndarray): Input image in RGB format
+            
+        Returns:
+            Optional[dict[str, any]]: Dictionary containing detection info or None if no plate found
+        """
+        if self.license_plate_recognition.lpd_model is None:
+            logger.debug("License plate detector model not loaded")
+            return None
+
+        # Convert to BGR for WPOD-NET
+        input_bgr = cv2.cvtColor(input, cv2.COLOR_RGB2BGR)
+        
+        # Run WPOD-NET model using the public detect() method
+        results = self.license_plate_recognition.lpd_model([input_bgr])
+        detections = results.get('detections', [])
+        if not detections:
+            return None
+
+        # Get the highest confidence detection
+        best_detection = max(detections, key=lambda x: x['confidence'])
+        plate_idx = detections.index(best_detection)
+        plates = results.get('plates', [])
+        plate_img = plates[plate_idx] if plate_idx < len(plates) else None
+
+        # Convert points to box format [left, top, right, bottom]
+        points = np.array(best_detection['points'])
+        left, top = np.min(points, axis=0)
+        right, bottom = np.max(points, axis=0)
+        
+        return {
+            'box': [int(left), int(top), int(right), int(bottom)],
+            'score': float(best_detection['confidence']),
+            'plate_img': plate_img
+        }
 
     def _process_license_plate(
         self, obj_data: dict[str, any], frame: np.ndarray
@@ -384,6 +419,7 @@ class EmbeddingMaintainer(threading.Thread):
             return False
 
         license_plate: Optional[dict[str, any]] = None
+        license_plate_frame = None
 
         if self.requires_license_plate_detection:
             logger.debug("Running manual license_plate detection.")
@@ -395,16 +431,16 @@ class EmbeddingMaintainer(threading.Thread):
             rgb = cv2.cvtColor(frame, cv2.COLOR_YUV2RGB_I420)
             left, top, right, bottom = car_box
             car = rgb[top:bottom, left:right]
+            
+            # Detect license plate using WPOD-NET
             license_plate = self._detect_license_plate(car)
 
             if not license_plate:
                 logger.debug("Detected no license plates for car object.")
                 return False
 
-            license_plate_frame = car[
-                license_plate[1] : license_plate[3], license_plate[0] : license_plate[2]
-            ]
-            license_plate_frame = cv2.cvtColor(license_plate_frame, cv2.COLOR_RGB2BGR)
+            # Use the warped plate image from WPOD-NET
+            license_plate_frame = license_plate['plate_img']
         else:
             # don't run for object without attributes
             if not obj_data.get("current_attributes"):
@@ -441,7 +477,21 @@ class EmbeddingMaintainer(threading.Thread):
                 license_plate_box[0] : license_plate_box[2],
             ]
 
+        if license_plate_frame is None:
+            logger.debug("No valid license plate frame to process")
+            return False
+
         # run detection, returns results sorted by confidence, best first
+        
+        # Save the license plate image for debugging if we have a valid frame
+        if license_plate_frame is not None and id:
+            try:
+                lpd_debug_dir = os.path.join(CLIPS_DIR, "lpd")
+                os.makedirs(lpd_debug_dir, exist_ok=True)
+                cv2.imwrite(os.path.join(lpd_debug_dir, f"plate_{id}.jpg"), license_plate_frame)
+            except Exception as e:
+                logger.warning(f"Failed to save license plate debug image: {e}")
+
         license_plates, confidences, areas = (
             self.license_plate_recognition.process_license_plate(license_plate_frame, id)
         )

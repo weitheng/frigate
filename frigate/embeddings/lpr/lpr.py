@@ -32,6 +32,7 @@ class LicensePlateRecognition:
         self.detection_model = self.embeddings.lpr_detection_model
         self.classification_model = self.embeddings.lpr_classification_model
         self.recognition_model = self.embeddings.lpr_recognition_model
+        self.lpd_model = self.embeddings.lp_detection_model  # WPOD-NET model
         self.ctc_decoder = CTCDecoder()
 
         self.batch_size = 6
@@ -48,6 +49,7 @@ class LicensePlateRecognition:
 
         if self.lpr_config.enabled:
             # all models need to be loaded to run LPR
+            self.lpd_model._load_model_and_utils()  # Load WPOD-NET first
             self.detection_model._load_model_and_utils()
             self.classification_model._load_model_and_utils()
             self.recognition_model._load_model_and_utils()

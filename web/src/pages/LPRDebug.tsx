@@ -221,16 +221,35 @@ function LPRAttempt({ attempt, config, onRefresh }: LPRAttemptProps) {
       />
 
       <div className="relative flex flex-col rounded-lg">
-        <div 
-          className="w-full overflow-hidden rounded-t-lg border border-t-0 *:text-card-foreground cursor-pointer"
-          onClick={() => setShowDialog(true)}
-        >
-          <div className="aspect-[2/1] flex items-center justify-center bg-black">
-            <img 
-              className="h-40 max-w-none" 
-              src={`${baseUrl}clips/lpr/${attempt}`} 
-            />
+        <div className="flex flex-row gap-2 w-full overflow-hidden rounded-t-lg border border-t-0 *:text-card-foreground">
+          {/* OCR Result Image */}
+          <div 
+            className="flex-1 cursor-pointer"
+            onClick={() => setShowDialog(true)}
+          >
+            <div className="aspect-[2/1] flex items-center justify-center bg-black">
+              <img 
+                className="h-40 max-w-none" 
+                src={`${baseUrl}clips/lpr/${attempt}`}
+                alt="OCR Result"
+              />
+            </div>
           </div>
+          {/* WPOD-NET Detected Plate */}
+          {data.eventId && (
+            <div 
+              className="flex-1 cursor-pointer"
+              onClick={() => setShowDialog(true)}
+            >
+              <div className="aspect-[2/1] flex items-center justify-center bg-black">
+                <img 
+                  className="h-40 max-w-none" 
+                  src={`${baseUrl}clips/lpd/plate_${data.eventId}.jpg`}
+                  alt="WPOD-NET Detection"
+                />
+              </div>
+            </div>
+          )}
         </div>
         <div className="flex w-full grow items-center justify-between rounded-b-lg border border-t-0 bg-card p-3 text-card-foreground">
           <div className="flex flex-col items-start text-xs text-primary-variant">

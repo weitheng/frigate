@@ -23,6 +23,8 @@ from frigate.types import ModelStatusTypesEnum
 from frigate.util.builtin import serialize
 
 from .functions.onnx import GenericONNXEmbedding, ModelTypeEnum
+from .functions.license_plate_detector import LicensePlateDetector
+from .functions.model_downloader import ModelDownloader
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,7 @@ class Embeddings:
             "paddleocr-onnx-detection.onnx",
             "paddleocr-onnx-classification.onnx",
             "paddleocr-onnx-recognition.onnx",
+            "lpdetection-onnx-lpdetection.onnx",
         ]
 
         for model in models:
@@ -131,11 +134,27 @@ class Embeddings:
             device="GPU" if config.semantic_search.model_size == "large" else "CPU",
         )
 
+        self.lp_detection_model = None
         self.lpr_detection_model = None
         self.lpr_classification_model = None
         self.lpr_recognition_model = None
 
         if self.config.lpr.enabled:
+            self.lp_detection_model = GenericONNXEmbedding(
+                model_name="lpdetection-onnx",
+                model_file="lpdetection.onnx",
+                download_urls={
+                    "lpdetection.onnx": "https://github.com/weitheng/lpdetection-onnx/raw/refs/heads/master/models/lpdetection.onnx"
+                },
+                model_size="large",
+                model_type=ModelTypeEnum.lp_detect,
+                requestor=self.requestor,
+                device="GPU",
+            )
+            # Set WPOD-NET specific parameters
+            self.lp_detection_model.confidence_threshold = 0.5
+            self.lp_detection_model.max_dimension = 608
+
             self.lpr_detection_model = GenericONNXEmbedding(
                 model_name="paddleocr-onnx",
                 model_file="detection.onnx",
