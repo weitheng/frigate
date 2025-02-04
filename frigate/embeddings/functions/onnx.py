@@ -280,7 +280,13 @@ class GenericONNXEmbedding:
         if self.model_type == ModelTypeEnum.lp_detect:
             if len(inputs) != 1:
                 raise ValueError("WPOD-NET supports single input only. Batch inputs are not supported.")
-            return self.lpd.detect(inputs[0])
+            if not isinstance(inputs[0], np.ndarray):
+                raise ValueError("WPOD-NET expects numpy array input")
+            try:
+                return self.lpd.detect(inputs[0])
+            except Exception as e:
+                logger.error(f"Error in WPOD-NET detection: {e}")
+                return {"detections": [], "plates": []}
 
         # Standard ONNX pipeline for other models
         processed_inputs = self._preprocess_inputs(inputs)

@@ -108,13 +108,12 @@ class LicensePlateDetector:
         self.nms_threshold = nms_threshold or 0.1  # Default if not in config
         self.net_stride = 16
 
-    def detect(self, image: np.ndarray, return_timing: bool = False) -> dict:
+    def detect(self, image: np.ndarray) -> dict:
         """
         Detect license plates in an image.
         
         Args:
             image: Input image in BGR format (HxWx3)
-            return_timing: Whether to return inference timing information
             
         Returns:
             Dictionary containing:
@@ -131,12 +130,29 @@ class LicensePlateDetector:
         # Preprocess
         processed, orig_shape, _ = self._preprocess_image(image)
         
+        # Get input shape from model
+        input_shape = self.session.get_inputs()[0].shape
+        if len(input_shape) != 4:  # Should be [batch_size, channels, height, width]
+            raise ValueError(f"Unexpected input shape from model: {input_shape}")
+            
+        # Ensure processed image matches expected shape
+        if processed.shape[1:] != tuple(input_shape[1:]):  # Compare everything except batch size
+            logger.warning(f"Resizing input from {processed.shape} to match model input {input_shape}")
+            # Resize to match expected dimensions
+            if len(processed.shape) == 3:  # Add batch dimension if missing
+                processed = np.expand_dims(processed, axis=0)
+            processed = cv2.resize(processed[0].transpose(1, 2, 0), 
+                                 (input_shape[3], input_shape[2])).transpose(2, 0, 1)
+            processed = np.expand_dims(processed, axis=0)
+        
         # Run inference
-        start_time = time.time()
-        outputs = self.session.run(None, {"input": processed})[0]
-        if outputs.ndim == 4:
-            outputs = outputs[0]  # Remove batch dimension
-        inference_time = time.time() - start_time
+        try:
+            outputs = self.session.run(None, {"input": processed})[0]
+            if outputs.ndim == 4:
+                outputs = outputs[0]  # Remove batch dimension
+        except Exception as e:
+            logger.error(f"Error running WPOD-NET inference: {e}")
+            return {"detections": [], "plates": []}
         
         # Post-process
         labels = self._detect_plates(image, processed, outputs)
@@ -156,15 +172,10 @@ class LicensePlateDetector:
             # Add warped plate
             plates.append(self._warp_plate(image, label))
         
-        # Prepare return dictionary
-        results = {
+        return {
             'detections': detections,
             'plates': plates
         }
-        if return_timing:
-            results['inference_time'] = inference_time
-            
-        return results
 
     def draw_detections(self, image: np.ndarray, detections: List[dict], 
                        color: tuple = (0, 255, 0), thickness: int = 2) -> np.ndarray:
@@ -442,11 +453,7 @@ if __name__ == "__main__":
     
     # Load and process image
     image = cv2.imread("test_image.jpg")
-    results = detector.detect(image, return_timing=True)
-    
-    # Print inference time
-    if 'inference_time' in results:
-        print(f"Inference time: {results['inference_time']*1000:.1f}ms")
+    results = detector.detect(image)
     
     # Draw results
     output_image = detector.draw_detections(image, results['detections'])
