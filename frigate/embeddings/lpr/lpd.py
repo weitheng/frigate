@@ -125,7 +125,7 @@ class LicensePlateDetector:
             if input_shape[1] != 3 and input_shape[-1] != 3:
                 raise ValueError(f"Model must have 3 channels, shape: {input_shape}")
             if any(isinstance(dim, str) for dim in input_shape):
-                logger.warning("Model has dynamic dimensions which may cause issues: {input_shape}")
+                logger.info(f"Model has dynamic dimensions: {input_shape} - This is expected and will be handled automatically")
             
         except Exception as e:
             logger.error(f"LPR: Failed to load ONNX model: {str(e)}")
