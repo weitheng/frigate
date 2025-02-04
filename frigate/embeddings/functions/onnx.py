@@ -265,7 +265,7 @@ class GenericONNXEmbedding:
 
     def __call__(
         self, inputs: Union[List[str], List[Image.Image], List[str]]
-    ) -> List[np.ndarray]:
+    ) -> Union[Dict[str, List], List[np.ndarray]]:
         self._load_model_and_utils()
         if self.runner is None or (
             self.tokenizer is None and self.feature_extractor is None
@@ -274,7 +274,7 @@ class GenericONNXEmbedding:
             logger.error(
                 f"{self.model_name} model or tokenizer/feature extractor is not loaded."
             )
-            return []
+            return [] if self.model_type != ModelTypeEnum.lp_detect else {"detections": [], "plates": []}
 
         # Special handling for WPOD-NET which manages its own pipeline
         if self.model_type == ModelTypeEnum.lp_detect:
