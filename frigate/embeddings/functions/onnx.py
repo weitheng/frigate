@@ -8,7 +8,6 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import requests
 from PIL import Image
-import cv2
 
 # importing this without pytorch or others causes a warning
 # https://github.com/huggingface/transformers/issues/27214

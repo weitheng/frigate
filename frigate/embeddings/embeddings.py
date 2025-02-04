@@ -23,7 +23,6 @@ from frigate.types import ModelStatusTypesEnum
 from frigate.util.builtin import serialize
 
 from .functions.onnx import GenericONNXEmbedding, ModelTypeEnum
-from .lpr.lpd import LicensePlateDetector
 
 logger = logging.getLogger(__name__)
 
