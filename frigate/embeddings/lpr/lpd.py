@@ -224,7 +224,8 @@ class LicensePlateDetector:
         
         return {
             'detections': detections,
-            'plates': plates
+            'plates': plates,
+            'inference_time': inference_time
         }
 
     def draw_detections(self, image: np.ndarray, detections: List[dict], 
@@ -534,27 +535,3 @@ class LicensePlateDetector:
         _, _, V = np.linalg.svd(A)
         H = V[-1, :].reshape((3, 3))
         return H / H[2, 2]
-
-# Example usage:
-if __name__ == "__main__":
-    # Initialize detector
-    detector = LicensePlateDetector(
-        model_path="path/to/model.onnx",
-        confidence_threshold=0.5
-    )
-    
-    # Load and process image
-    image = cv2.imread("test_image.jpg")
-    results = detector.detect(image)
-    
-    # Draw results
-    output_image = detector.draw_detections(image, results['detections'])
-    
-    # Display or save results
-    cv2.imshow("Detections", output_image)
-    cv2.waitKey(0)
-    
-    # Access individual plate images
-    for i, plate in enumerate(results['plates']):
-        cv2.imshow(f"Plate {i+1}", plate)
-        cv2.waitKey(0) 

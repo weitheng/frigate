@@ -39,6 +39,7 @@ export type EmbeddingsStats = {
   image_embedding_speed: number;
   face_embedding_speed: number;
   plate_recognition_speed: number;
+  plate_detection_speed: number;
   text_embedding_speed: number;
 };
 

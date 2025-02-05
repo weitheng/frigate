@@ -302,6 +302,9 @@ def stats_snapshot(
             stats["embeddings"]["plate_recognition_speed"] = round(
                 embeddings_metrics.alpr_pps.value * 1000, 2
             )
+            stats["embeddings"]["plate_detection_speed"] = round(
+                embeddings_metrics.lpd_fps.value * 1000, 2
+            )
 
     get_processing_stats(config, stats, hwaccel_errors)
 
