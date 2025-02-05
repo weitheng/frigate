@@ -43,16 +43,58 @@ export default function LPRDebug() {
     
     const attempts = Object.keys(lprData).filter((attempt) => attempt != "train");
     
-    // Get all events first to access their scores and cameras
+    // Get all events first to access their scores and timestamps
     const eventScores = new Map<string, number>();
+    const eventTimestamps = new Map<string, number>();
     const eventCameras = new Map<string, string>();
+    
     attempts.forEach((attempt) => {
-      const parts = attempt.split("-");
-      const eventId = `${parts[0]}-${parts[1]}`;
-      const event = lprData[eventId];
-      if (event?.data?.sub_label_score) {
-        eventScores.set(attempt, event.data.sub_label_score);
+      // Extract event ID from filename - handle all formats:
+      // 1. PLATE_SCORE_EVENTID.jpg (from OCR)
+      // 2. raw_EVENTID.jpg (from raw captures)
+      // 3. plate_EVENTID.jpg (from WPOD-NET)
+      // 4. no_text_TIMESTAMP.jpg (failed recognition)
+      let eventId = null;
+      let timestamp = null;
+
+      if (attempt.startsWith('no_text_')) {
+        // Failed recognition format: no_text_TIMESTAMP.jpg
+        timestamp = parseInt(attempt.replace('no_text_', '').replace('.jpg', ''));
+      } else if (attempt.startsWith('raw_')) {
+        eventId = attempt.replace('raw_', '').replace('.jpg', '');
+      } else if (attempt.startsWith('plate_')) {
+        eventId = attempt.replace('plate_', '').replace('.jpg', '');
+      } else {
+        // OCR result format: PLATE_SCORE_TIMESTAMP-CAMERA-ID.jpg
+        const parts = attempt.split('_');
+        eventId = parts.slice(2).join('_').replace('.jpg', '');
+        // Try to get timestamp from eventId (format: TIMESTAMP-CAMERA-ID)
+        const idParts = eventId?.split('-');
+        if (idParts?.length > 0) {
+          const possibleTimestamp = parseInt(idParts[0]);
+          if (!isNaN(possibleTimestamp)) {
+            timestamp = possibleTimestamp;
+          }
+        }
       }
+
+      const event = eventId ? lprData[eventId] : null;
+      
+      if (event?.data?.sub_label_score) {
+        // Convert score to number for proper comparison
+        eventScores.set(attempt, parseFloat(event.data.sub_label_score));
+      }
+      
+      // Set timestamp with priority:
+      // 1. Event start_time
+      // 2. Extracted timestamp from filename
+      // 3. File timestamp for no_text_ files
+      if (event?.start_time) {
+        eventTimestamps.set(attempt, event.start_time);
+      } else if (timestamp) {
+        eventTimestamps.set(attempt, timestamp);
+      }
+
       if (event?.camera) {
         eventCameras.set(attempt, event.camera);
       }
@@ -69,6 +111,8 @@ export default function LPRDebug() {
     return filteredAttempts.sort((a, b) => {
       const scoreA = eventScores.get(a) || 0;
       const scoreB = eventScores.get(b) || 0;
+      const timeA = eventTimestamps.get(a);
+      const timeB = eventTimestamps.get(b);
       
       switch (sortBy) {
         case "score_desc":
@@ -76,10 +120,17 @@ export default function LPRDebug() {
         case "score_asc":
           return scoreA - scoreB;
         case "time_desc":
-          // For time sorting, we'll use the file creation order (default order)
-          return b.localeCompare(a);
+          // If we don't have timestamps, fall back to filename comparison
+          if (timeA === undefined || timeB === undefined) {
+            return b.localeCompare(a);
+          }
+          return timeB - timeA;
         case "time_asc":
-          return a.localeCompare(b);
+          // If we don't have timestamps, fall back to filename comparison
+          if (timeA === undefined || timeB === undefined) {
+            return a.localeCompare(b);
+          }
+          return timeA - timeB;
         default:
           return 0;
       }
@@ -126,10 +177,10 @@ export default function LPRDebug() {
             <DropdownMenuContent>
               <DropdownMenuLabel>Sort by</DropdownMenuLabel>
               <DropdownMenuItem onClick={() => setSortBy("score_desc")} className={sortBy === "score_desc" ? "bg-accent" : ""}>
-                Ascending Score
+                Highest Score First
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setSortBy("score_asc")} className={sortBy === "score_asc" ? "bg-accent" : ""}>
-                Descending Score
+                Lowest Score First
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setSortBy("time_desc")} className={sortBy === "time_desc" ? "bg-accent" : ""}>
                 Most Recent
@@ -164,12 +215,42 @@ type LPRAttemptProps = {
 function LPRAttempt({ attempt, config, onRefresh }: LPRAttemptProps) {
   const [showDialog, setShowDialog] = useState(false);
   const data = useMemo(() => {
-    const parts = attempt.split("_");
-    return {
-      plate: parts[0] || "Text not extracted",
-      score: parts[1] || "0",
-      eventId: parts[2]?.replace(".jpg", "") || null,
-    };
+    // Extract data from filename based on format
+    if (attempt.startsWith('no_text_')) {
+      // Failed recognition format: no_text_TIMESTAMP.jpg
+      const timestamp = parseInt(attempt.replace('no_text_', '').replace('.jpg', ''));
+      return {
+        plate: "Recognition Failed",
+        score: "0",
+        eventId: null,
+        timestamp: timestamp,
+      };
+    } else if (attempt.startsWith('raw_')) {
+      // Raw image format: raw_EVENTID.jpg
+      const eventId = attempt.replace('raw_', '').replace('.jpg', '');
+      return {
+        plate: "Raw Capture",
+        score: "0",
+        eventId,
+      };
+    } else if (attempt.startsWith('plate_')) {
+      // WPOD-NET format: plate_EVENTID.jpg
+      const eventId = attempt.replace('plate_', '').replace('.jpg', '');
+      return {
+        plate: "WPOD-NET Detection",
+        score: "0",
+        eventId,
+      };
+    } else {
+      // OCR result format: PLATE_SCORE_TIMESTAMP-CAMERA-ID.jpg
+      const parts = attempt.split("_");
+      const eventId = parts.slice(2).join('_').replace('.jpg', '');
+      return {
+        plate: parts[0] || "Text not extracted",
+        score: parts[1] || "0",
+        eventId: eventId || null,
+      };
+    }
   }, [attempt]);
 
   const { data: event } = useSWR<Event>(
@@ -177,7 +258,7 @@ function LPRAttempt({ attempt, config, onRefresh }: LPRAttemptProps) {
   );
 
   const timestamp = useFormattedTimestamp(
-    event?.start_time ?? 0,
+    event?.start_time ?? data.timestamp ?? 0,
     config?.ui.time_format == "24hour" ? "%b %-d %Y, %H:%M" : "%b %-d %Y, %I:%M %p",
     config?.ui.timezone,
   );
@@ -206,9 +287,6 @@ function LPRAttempt({ attempt, config, onRefresh }: LPRAttemptProps) {
       });
   }, [attempt, onRefresh]);
 
-  // Extract event ID from processed image filename (format: PLATE_SCORE_EVENTID.jpg)
-  const eventId = useMemo(() => attempt.split("_").slice(2).join("_").replace(".jpg", ""), [attempt]);
-
   return (
     <>
       <LPRDetailDialog
@@ -217,12 +295,12 @@ function LPRAttempt({ attempt, config, onRefresh }: LPRAttemptProps) {
         event={event}
         config={config}
         lprImage={attempt}
-        rawImage={`raw_${eventId}.jpg`}
+        rawImage={`raw_${data.eventId}.jpg`}
       />
 
       <div className="relative flex flex-col rounded-lg">
         <div className="flex flex-row gap-2 w-full overflow-hidden rounded-t-lg border border-t-0 *:text-card-foreground">
-          {/* OCR Result Image */}
+          {/* Main Image (OCR/Raw/WPOD-NET) */}
           <div 
             className="flex-1 cursor-pointer"
             onClick={() => setShowDialog(true)}
@@ -230,13 +308,13 @@ function LPRAttempt({ attempt, config, onRefresh }: LPRAttemptProps) {
             <div className="aspect-[2/1] flex items-center justify-center bg-black">
               <img 
                 className="h-40 max-w-none" 
-                src={`${baseUrl}clips/lpr/${attempt}`}
-                alt="OCR Result"
+                src={`${baseUrl}clips/${attempt.startsWith('plate_') ? 'lpd' : 'lpr'}/${attempt}`}
+                alt={data.plate}
               />
             </div>
           </div>
-          {/* WPOD-NET Detected Plate */}
-          {data.eventId && (
+          {/* Show WPOD-NET detection alongside OCR results */}
+          {data.eventId && !attempt.startsWith('plate_') && (
             <div 
               className="flex-1 cursor-pointer"
               onClick={() => setShowDialog(true)}
