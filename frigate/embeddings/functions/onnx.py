@@ -40,7 +40,6 @@ class ModelTypeEnum(str, Enum):
     vision = "vision"
     text = "text"
     lp_detect = "lp_detect"  # WPOD-NET model
-    lpr_detect = "lpr_detect"
     lpr_classify = "lpr_classify"
     lpr_recognize = "lpr_recognize"
 
@@ -155,8 +154,6 @@ class GenericONNXEmbedding:
                 self.feature_extractor = []
             elif self.model_type == ModelTypeEnum.lp_detect:
                 self.feature_extractor = []
-            elif self.model_type == ModelTypeEnum.lpr_detect:
-                self.feature_extractor = []
             elif self.model_type == ModelTypeEnum.lpr_classify:
                 self.feature_extractor = []
             elif self.model_type == ModelTypeEnum.lpr_recognize:
@@ -235,11 +232,6 @@ class GenericONNXEmbedding:
             frame[y_center : y_center + og_h, x_center : x_center + og_w] = og
             frame = np.expand_dims(frame, axis=0)
             return [{"input_2": frame}]
-        elif self.model_type == ModelTypeEnum.lpr_detect:
-            preprocessed = []
-            for x in raw_inputs:
-                preprocessed.append(x)
-            return [{"x": preprocessed[0]}]
         elif self.model_type == ModelTypeEnum.lpr_classify:
             processed = []
             for img in raw_inputs:

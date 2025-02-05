@@ -6,8 +6,6 @@ from typing import List, Tuple
 
 import cv2
 import numpy as np
-from pyclipper import ET_CLOSEDPOLYGON, JT_ROUND, PyclipperOffset
-from shapely.geometry import Polygon
 
 from frigate.comms.inter_process import InterProcessRequestor
 from frigate.config.classification import LicensePlateRecognitionConfig
@@ -17,7 +15,6 @@ from frigate.const import CLIPS_DIR
 logger = logging.getLogger(__name__)
 
 MIN_PLATE_LENGTH = 3
-
 
 class LicensePlateRecognition:
     def __init__(
@@ -29,7 +26,6 @@ class LicensePlateRecognition:
         self.lpr_config = config
         self.requestor = requestor
         self.embeddings = embeddings
-        self.detection_model = self.embeddings.lpr_detection_model
         self.classification_model = self.embeddings.lpr_classification_model
         self.recognition_model = self.embeddings.lpr_recognition_model
         self.lpd_model = self.embeddings.lp_detection_model  # WPOD-NET model
@@ -37,47 +33,15 @@ class LicensePlateRecognition:
 
         self.batch_size = 6
 
-        # Detection specific parameters
-        self.min_size = 3
-        self.max_size = 960
-        self.box_thresh = 0.8
-        self.mask_thresh = 0.8
-
         # Create debug directory
         self.debug_dir = os.path.join(CLIPS_DIR, "lpr")
         os.makedirs(self.debug_dir, exist_ok=True)
 
         if self.lpr_config.enabled:
             # all models need to be loaded to run LPR
-            self.lpd_model._load_model_and_utils()  # Load WPOD-NET first
-            self.detection_model._load_model_and_utils()
+            self.lpd_model._load_model_and_utils()
             self.classification_model._load_model_and_utils()
             self.recognition_model._load_model_and_utils()
-
-    def detect(self, image: np.ndarray) -> List[np.ndarray]:
-        """
-        Detect possible license plates in the input image by first resizing and normalizing it,
-        running a detection model, and filtering out low-probability regions.
-
-        Args:
-            image (np.ndarray): The input image in which license plates will be detected.
-
-        Returns:
-            List[np.ndarray]: A list of bounding box coordinates representing detected license plates.
-        """
-        h, w = image.shape[:2]
-
-        if sum([h, w]) < 64:
-            image = self.zero_pad(image)
-
-        resized_image = self.resize_image(image)
-        normalized_image = self.normalize_image(resized_image)
-
-        outputs = self.detection_model([normalized_image])[0]
-        outputs = outputs[0, :, :]
-
-        boxes, _ = self.boxes_from_bitmap(outputs, outputs > self.mask_thresh, w, h)
-        return self.filter_polygon(boxes, (h, w))
 
     def classify(
         self, images: List[np.ndarray]
@@ -94,17 +58,21 @@ class LicensePlateRecognition:
         """
         num_images = len(images)
         indices = np.argsort([x.shape[1] / x.shape[0] for x in images])
+        all_outputs = []
 
         for i in range(0, num_images, self.batch_size):
+            batch_indices = indices[i:min(num_images, i + self.batch_size)]
             norm_images = []
-            for j in range(i, min(num_images, i + self.batch_size)):
-                norm_img = self._preprocess_classification_image(images[indices[j]])
+            for idx in batch_indices:
+                norm_img = self._preprocess_classification_image(images[idx])
                 norm_img = norm_img[np.newaxis, :]
                 norm_images.append(norm_img)
 
-        outputs = self.classification_model(norm_images)
+            # Process this batch
+            batch_outputs = self.classification_model(norm_images)
+            all_outputs.extend(batch_outputs)
 
-        return self._process_classification_output(images, outputs)
+        return self._process_classification_output(images, all_outputs)
 
     def recognize(
         self, images: List[np.ndarray]
@@ -120,30 +88,35 @@ class LicensePlateRecognition:
         """
         input_shape = [3, 48, 320]
         num_images = len(images)
+        all_outputs = []
 
         # sort images by aspect ratio for processing
         indices = np.argsort(np.array([x.shape[1] / x.shape[0] for x in images]))
 
         for index in range(0, num_images, self.batch_size):
+            batch_indices = indices[index:min(num_images, index + self.batch_size)]
             input_h, input_w = input_shape[1], input_shape[2]
             max_wh_ratio = input_w / input_h
             norm_images = []
 
             # calculate the maximum aspect ratio in the current batch
-            for i in range(index, min(num_images, index + self.batch_size)):
-                h, w = images[indices[i]].shape[0:2]
+            for i in batch_indices:
+                h, w = images[i].shape[0:2]
                 max_wh_ratio = max(max_wh_ratio, w * 1.0 / h)
 
             # preprocess the images based on the max aspect ratio
-            for i in range(index, min(num_images, index + self.batch_size)):
+            for i in batch_indices:
                 norm_image = self._preprocess_recognition_image(
-                    images[indices[i]], max_wh_ratio
+                    images[i], max_wh_ratio
                 )
                 norm_image = norm_image[np.newaxis, :]
                 norm_images.append(norm_image)
 
-        outputs = self.recognition_model(norm_images)
-        return self.ctc_decoder(outputs)
+            # Process this batch
+            batch_outputs = self.recognition_model(norm_images)
+            all_outputs.extend(batch_outputs)
+
+        return self.ctc_decoder(all_outputs)
 
     def process_license_plate(
         self, image: np.ndarray, event_id: str = ""
@@ -159,8 +132,7 @@ class LicensePlateRecognition:
             Tuple[List[str], List[float], List[int]]: Detected license plate texts, confidence scores, and areas of the plates.
         """
         if (
-            self.detection_model.runner is None
-            or self.classification_model.runner is None
+            self.classification_model.runner is None
             or self.recognition_model.runner is None
         ):
             # we might still be downloading the models
@@ -175,13 +147,10 @@ class LicensePlateRecognition:
             except Exception as e:
                 logger.warning(f"Failed to save raw debug image: {e}")
 
-        plate_points = self.detect(image)
-        if len(plate_points) == 0:
-            return [], [], []
-
-        plate_points = self.sort_polygon(list(plate_points))
-        plate_images = [self._crop_license_plate(image, x) for x in plate_points]
-        rotated_images, _ = self.classify(plate_images)
+        # Skip detection since we already have a cropped plate from WPOD-NET
+        # Directly classify and recognize the plate
+        rotated_images, classifications = self.classify([image])
+        logger.debug(f"Classification results: {classifications}")
 
         # keep track of the index of each image for correct area calc later
         sorted_indices = np.argsort([x.shape[1] / x.shape[0] for x in rotated_images])
@@ -190,6 +159,7 @@ class LicensePlateRecognition:
         }
 
         results, confidences = self.recognize(rotated_images)
+        logger.debug(f"Recognition results: {list(zip(results, confidences))}")
 
         if results:
             license_plates = [""] * len(rotated_images)
@@ -244,270 +214,6 @@ class LicensePlateRecognition:
             cv2.imwrite(os.path.join(self.debug_dir, filename), save_image)
 
         return [], [], []
-
-    def resize_image(self, image: np.ndarray) -> np.ndarray:
-        """
-        Resize the input image while maintaining the aspect ratio, ensuring dimensions are multiples of 32.
-
-        Args:
-            image (np.ndarray): The input image to resize.
-
-        Returns:
-            np.ndarray: The resized image.
-        """
-        h, w = image.shape[:2]
-        ratio = min(self.max_size / max(h, w), 1.0)
-        resize_h = max(int(round(int(h * ratio) / 32) * 32), 32)
-        resize_w = max(int(round(int(w * ratio) / 32) * 32), 32)
-        return cv2.resize(image, (resize_w, resize_h))
-
-    def normalize_image(self, image: np.ndarray) -> np.ndarray:
-        """
-        Normalize the input image by subtracting the mean and multiplying by the standard deviation.
-
-        Args:
-            image (np.ndarray): The input image to normalize.
-
-        Returns:
-            np.ndarray: The normalized image, transposed to match the model's expected input format.
-        """
-        mean = np.array([123.675, 116.28, 103.53]).reshape(1, -1).astype("float64")
-        std = 1 / np.array([58.395, 57.12, 57.375]).reshape(1, -1).astype("float64")
-
-        image = image.astype("float32")
-        cv2.subtract(image, mean, image)
-        cv2.multiply(image, std, image)
-        return image.transpose((2, 0, 1))[np.newaxis, ...]
-
-    def boxes_from_bitmap(
-        self, output: np.ndarray, mask: np.ndarray, dest_width: int, dest_height: int
-    ) -> Tuple[np.ndarray, List[float]]:
-        """
-        Process the binary mask to extract bounding boxes and associated confidence scores.
-
-        Args:
-            output (np.ndarray): Output confidence map from the model.
-            mask (np.ndarray): Binary mask of detected regions.
-            dest_width (int): Target width for scaling the box coordinates.
-            dest_height (int): Target height for scaling the box coordinates.
-
-        Returns:
-            Tuple[np.ndarray, List[float]]: Array of bounding boxes and list of corresponding scores.
-        """
-
-        mask = (mask * 255).astype(np.uint8)
-        height, width = mask.shape
-        outs = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-
-        # handle different return values of findContours between OpenCV versions
-        contours = outs[0] if len(outs) == 2 else outs[1]
-
-        boxes = []
-        scores = []
-
-        for index in range(len(contours)):
-            contour = contours[index]
-
-            # get minimum bounding box (rotated rectangle) around the contour and the smallest side length.
-            points, min_side = self.get_min_boxes(contour)
-
-            if min_side < self.min_size:
-                continue
-
-            points = np.array(points)
-
-            score = self.box_score(output, contour)
-            if self.box_thresh > score:
-                continue
-
-            polygon = Polygon(points)
-            distance = polygon.area / polygon.length
-
-            # Use pyclipper to shrink the polygon slightly based on the computed distance.
-            offset = PyclipperOffset()
-            offset.AddPath(points, JT_ROUND, ET_CLOSEDPOLYGON)
-            points = np.array(offset.Execute(distance * 1.5)).reshape((-1, 1, 2))
-
-            # get the minimum bounding box around the shrunken polygon.
-            box, min_side = self.get_min_boxes(points)
-
-            if min_side < self.min_size + 2:
-                continue
-
-            box = np.array(box)
-
-            # normalize and clip box coordinates to fit within the destination image size.
-            box[:, 0] = np.clip(np.round(box[:, 0] / width * dest_width), 0, dest_width)
-            box[:, 1] = np.clip(
-                np.round(box[:, 1] / height * dest_height), 0, dest_height
-            )
-
-            boxes.append(box.astype("int32"))
-            scores.append(score)
-
-        return np.array(boxes, dtype="int32"), scores
-
-    @staticmethod
-    def get_min_boxes(contour: np.ndarray) -> Tuple[List[Tuple[float, float]], float]:
-        """
-        Calculate the minimum bounding box (rotated rectangle) for a given contour.
-
-        Args:
-            contour (np.ndarray): The contour points of the detected shape.
-
-        Returns:
-            Tuple[List[Tuple[float, float]], float]: A list of four points representing the
-            corners of the bounding box, and the length of the shortest side.
-        """
-        bounding_box = cv2.minAreaRect(contour)
-        points = sorted(cv2.boxPoints(bounding_box), key=lambda x: x[0])
-        index_1, index_4 = (0, 1) if points[1][1] > points[0][1] else (1, 0)
-        index_2, index_3 = (2, 3) if points[3][1] > points[2][1] else (3, 2)
-        box = [points[index_1], points[index_2], points[index_3], points[index_4]]
-        return box, min(bounding_box[1])
-
-    @staticmethod
-    def box_score(bitmap: np.ndarray, contour: np.ndarray) -> float:
-        """
-        Calculate the average score within the bounding box of a contour.
-
-        Args:
-            bitmap (np.ndarray): The output confidence map from the model.
-            contour (np.ndarray): The contour of the detected shape.
-
-        Returns:
-            float: The average score of the pixels inside the contour region.
-        """
-        h, w = bitmap.shape[:2]
-        contour = contour.reshape(-1, 2)
-        x1, y1 = np.clip(contour.min(axis=0), 0, [w - 1, h - 1])
-        x2, y2 = np.clip(contour.max(axis=0), 0, [w - 1, h - 1])
-        mask = np.zeros((y2 - y1 + 1, x2 - x1 + 1), dtype=np.uint8)
-        cv2.fillPoly(mask, [contour - [x1, y1]], 1)
-        return cv2.mean(bitmap[y1 : y2 + 1, x1 : x2 + 1], mask)[0]
-
-    @staticmethod
-    def expand_box(points: List[Tuple[float, float]]) -> np.ndarray:
-        """
-        Expand a polygonal shape slightly by a factor determined by the area-to-perimeter ratio.
-
-        Args:
-            points (List[Tuple[float, float]]): Points of the polygon to expand.
-
-        Returns:
-            np.ndarray: Expanded polygon points.
-        """
-        polygon = Polygon(points)
-        distance = polygon.area / polygon.length
-        offset = PyclipperOffset()
-        offset.AddPath(points, JT_ROUND, ET_CLOSEDPOLYGON)
-        expanded = np.array(offset.Execute(distance * 1.5)).reshape((-1, 2))
-        return expanded
-
-    def filter_polygon(
-        self, points: List[np.ndarray], shape: Tuple[int, int]
-    ) -> np.ndarray:
-        """
-        Filter a set of polygons to include only valid ones that fit within an image shape
-        and meet size constraints.
-
-        Args:
-            points (List[np.ndarray]): List of polygons to filter.
-            shape (Tuple[int, int]): Shape of the image (height, width).
-
-        Returns:
-            np.ndarray: List of filtered polygons.
-        """
-        height, width = shape
-        return np.array(
-            [
-                self.clockwise_order(point)
-                for point in points
-                if self.is_valid_polygon(point, width, height)
-            ]
-        )
-
-    @staticmethod
-    def is_valid_polygon(point: np.ndarray, width: int, height: int) -> bool:
-        """
-        Check if a polygon is valid, meaning it fits within the image bounds
-        and has sides of a minimum length.
-
-        Args:
-            point (np.ndarray): The polygon to validate.
-            width (int): Image width.
-            height (int): Image height.
-
-        Returns:
-            bool: Whether the polygon is valid or not.
-        """
-        return (
-            point[:, 0].min() >= 0
-            and point[:, 0].max() < width
-            and point[:, 1].min() >= 0
-            and point[:, 1].max() < height
-            and np.linalg.norm(point[0] - point[1]) > 3
-            and np.linalg.norm(point[0] - point[3]) > 3
-        )
-
-    @staticmethod
-    def clockwise_order(point: np.ndarray) -> np.ndarray:
-        """
-        Arrange the points of a polygon in clockwise order based on their angular positions
-        around the polygon's center.
-
-        Args:
-            point (np.ndarray): Array of points of the polygon.
-
-        Returns:
-            np.ndarray: Points ordered in clockwise direction.
-        """
-        center = point.mean(axis=0)
-        return point[
-            np.argsort(np.arctan2(point[:, 1] - center[1], point[:, 0] - center[0]))
-        ]
-
-    @staticmethod
-    def sort_polygon(points):
-        """
-        Sort polygons based on their position in the image. If polygons are close in vertical
-        position (within 10 pixels), sort them by horizontal position.
-
-        Args:
-            points: List of polygons to sort.
-
-        Returns:
-            List: Sorted list of polygons.
-        """
-        points.sort(key=lambda x: (x[0][1], x[0][0]))
-        for i in range(len(points) - 1):
-            for j in range(i, -1, -1):
-                if abs(points[j + 1][0][1] - points[j][0][1]) < 10 and (
-                    points[j + 1][0][0] < points[j][0][0]
-                ):
-                    temp = points[j]
-                    points[j] = points[j + 1]
-                    points[j + 1] = temp
-                else:
-                    break
-        return points
-
-    @staticmethod
-    def zero_pad(image: np.ndarray) -> np.ndarray:
-        """
-        Apply zero-padding to an image, ensuring its dimensions are at least 32x32.
-        The padding is added only if needed.
-
-        Args:
-            image (np.ndarray): Input image.
-
-        Returns:
-            np.ndarray: Zero-padded image.
-        """
-        h, w, c = image.shape
-        pad = np.zeros((max(32, h), max(32, w), c), np.uint8)
-        pad[:h, :w, :] = image
-        return pad
 
     @staticmethod
     def _preprocess_classification_image(image: np.ndarray) -> np.ndarray:
@@ -629,52 +335,6 @@ class LicensePlateRecognition:
         padded_image[:, :, :resized_w] = resized_image
 
         return padded_image
-
-    @staticmethod
-    def _crop_license_plate(image: np.ndarray, points: np.ndarray) -> np.ndarray:
-        """
-        Crop the license plate from the image using four corner points.
-
-        This method crops the region containing the license plate by using the perspective
-        transformation based on four corner points. If the resulting image is significantly
-        taller than wide, the image is rotated to the correct orientation.
-
-        Args:
-            image (np.ndarray): Input image containing the license plate.
-            points (np.ndarray): Four corner points defining the plate's position.
-
-        Returns:
-            np.ndarray: Cropped and potentially rotated license plate image.
-        """
-        assert len(points) == 4, "shape of points must be 4*2"
-        points = points.astype(np.float32)
-        crop_width = int(
-            max(
-                np.linalg.norm(points[0] - points[1]),
-                np.linalg.norm(points[2] - points[3]),
-            )
-        )
-        crop_height = int(
-            max(
-                np.linalg.norm(points[0] - points[3]),
-                np.linalg.norm(points[1] - points[2]),
-            )
-        )
-        pts_std = np.float32(
-            [[0, 0], [crop_width, 0], [crop_width, crop_height], [0, crop_height]]
-        )
-        matrix = cv2.getPerspectiveTransform(points, pts_std)
-        image = cv2.warpPerspective(
-            image,
-            matrix,
-            (crop_width, crop_height),
-            borderMode=cv2.BORDER_REPLICATE,
-            flags=cv2.INTER_CUBIC,
-        )
-        height, width = image.shape[0:2]
-        if height * 1.0 / width >= 1.5:
-            image = np.rot90(image, k=3)
-        return image
 
 
 class CTCDecoder:
