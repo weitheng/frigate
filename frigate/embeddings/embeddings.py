@@ -147,7 +147,7 @@ class Embeddings:
                 model_size="large",
                 model_type=ModelTypeEnum.lp_detect,
                 requestor=self.requestor,
-                device="GPU",
+                device="CPU",
             )
             # Set WPOD-NET specific parameters
             self.lp_detection_model.confidence_threshold = 0.5
