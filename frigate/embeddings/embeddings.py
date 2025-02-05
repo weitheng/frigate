@@ -83,7 +83,6 @@ class Embeddings:
             else "jinaai/jina-clip-v1-vision_model_quantized.onnx",
             "jinaai/jina-clip-v1-preprocessor_config.json",
             "facenet-facenet.onnx",
-            "paddleocr-onnx-classification.onnx",
             "paddleocr-onnx-recognition.onnx",
             "lpdetection-onnx-lpdetection.onnx",
         ]
@@ -132,8 +131,6 @@ class Embeddings:
         )
 
         self.lp_detection_model = None
-        self.lpr_detection_model = None
-        self.lpr_classification_model = None
         self.lpr_recognition_model = None
 
         if self.config.lpr.enabled:
@@ -151,18 +148,6 @@ class Embeddings:
             # Set WPOD-NET specific parameters
             self.lp_detection_model.confidence_threshold = 0.5
             self.lp_detection_model.max_dimension = 608
-
-            self.lpr_classification_model = GenericONNXEmbedding(
-                model_name="paddleocr-onnx",
-                model_file="classification.onnx",
-                download_urls={
-                    "classification.onnx": "https://github.com/hawkeye217/paddleocr-onnx/raw/refs/heads/master/models/classification.onnx"
-                },
-                model_size="large",
-                model_type=ModelTypeEnum.lpr_classify,
-                requestor=self.requestor,
-                device="CPU",
-            )
 
             self.lpr_recognition_model = GenericONNXEmbedding(
                 model_name="paddleocr-onnx",
