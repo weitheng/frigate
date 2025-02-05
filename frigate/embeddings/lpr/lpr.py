@@ -3,6 +3,7 @@ import math
 import os
 import time
 from typing import List, Tuple
+import threading
 
 import cv2
 import numpy as np
@@ -85,6 +86,17 @@ class LicensePlateRecognition:
 
         return self.ctc_decoder(all_outputs)
 
+    def _save_debug_image_async(self, path: str, image: np.ndarray) -> None:
+        """Save debug image asynchronously using a thread."""
+        def _save():
+            try:
+                cv2.imwrite(path, image)
+                logger.debug(f"Saved debug image to: {path}")
+            except Exception as e:
+                logger.warning(f"Failed to save debug image: {e}")
+            
+        threading.Thread(target=_save, daemon=True).start()
+
     def process_license_plate(
         self, image: np.ndarray, event_id: str = ""
     ) -> Tuple[List[str], List[float], List[int]]:
@@ -108,11 +120,8 @@ class LicensePlateRecognition:
 
         # Save raw plate image for debugging if event_id is provided
         if event_id:
-            try:
-                raw_filename = f"raw_{event_id}.jpg"
-                cv2.imwrite(os.path.join(self.debug_dir, raw_filename), image)
-            except Exception as e:
-                logger.warning(f"Failed to save raw debug image: {e}")
+            raw_filename = f"raw_{event_id}.jpg"
+            self._save_debug_image_async(os.path.join(self.debug_dir, raw_filename), image)
 
         # Run recognition on the plate image
         logger.debug("Running recognition on plate image")
@@ -133,7 +142,7 @@ class LicensePlateRecognition:
                 # Save debug image (image is already in BGR format)
                 try:
                     filename = f"{plate}_{int(avg_confidence * 100)}_{event_id}.jpg" if event_id else f"{plate}_{int(avg_confidence * 100)}.jpg"
-                    cv2.imwrite(os.path.join(self.debug_dir, filename), image)
+                    self._save_debug_image_async(os.path.join(self.debug_dir, filename), image)
                 except Exception as e:
                     logger.warning(f"Failed to save debug image: {e}")
 
@@ -160,7 +169,7 @@ class LicensePlateRecognition:
 
         # Save debug image for failed recognition (image is already in BGR format)
         filename = f"no_text_{int(time.time())}.jpg"
-        cv2.imwrite(os.path.join(self.debug_dir, filename), image)
+        self._save_debug_image_async(os.path.join(self.debug_dir, filename), image)
 
         return [], [], []
 

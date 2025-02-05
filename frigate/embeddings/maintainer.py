@@ -509,19 +509,17 @@ class EmbeddingMaintainer(threading.Thread):
             logger.warning(f"No valid license plate frame to process for object {id}")
             return False
 
-        # run detection, returns results sorted by confidence, best first
-        
         # Save the license plate image for debugging if we have a valid frame
         if license_plate_frame is not None and id:
             try:
                 lpd_debug_dir = os.path.join(CLIPS_DIR, "lpd")
                 os.makedirs(lpd_debug_dir, exist_ok=True)
                 debug_path = os.path.join(lpd_debug_dir, f"plate_{id}.jpg")
-                cv2.imwrite(debug_path, license_plate_frame)
-                logger.debug(f"Saved debug license plate image to: {debug_path}")
+                self.license_plate_recognition._save_debug_image_async(debug_path, license_plate_frame)
             except Exception as e:
                 logger.warning(f"Failed to save license plate debug image for {id}: {e}")
 
+        # run detection, returns results sorted by confidence, best first
         logger.debug(f"Running OCR on license plate frame for object {id}")
         license_plates, confidences, areas = (
             self.license_plate_recognition.process_license_plate(license_plate_frame, id)
