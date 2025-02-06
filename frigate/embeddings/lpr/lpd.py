@@ -27,6 +27,7 @@ import time
 import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
+from queue import Queue, Empty, Full
 
 logger = logging.getLogger(__name__)
 
@@ -138,182 +139,6 @@ class LicensePlateDetector:
         self.nms_threshold = nms_threshold or 0.1  # Default if not in config
         self.net_stride = 16
         logger.info("LPR: LicensePlateDetector initialized successfully")
-        # Use 2 worker threads: 1 for preprocessing, 1 for postprocessing
-        self.executor = ThreadPoolExecutor(max_workers=2)
-        self.lock = Lock()  # For thread-safe operations
-
-    def detect(self, image: np.ndarray) -> dict:
-        """
-        Detect license plates in an image.
-        
-        Args:
-            image: Input image in BGR format (HxWx3)
-            
-        Returns:
-            Dictionary containing:
-            - detections: List of detections, each containing:
-                - points: List of 4 points defining the plate quadrilateral
-                - confidence: Detection confidence score
-            - plates: List of warped plate images ready for OCR
-            - inference_time: (optional) Model inference time in seconds
-        """
-        start_time = time.time()
-        logger.debug(f"Starting license plate detection on image shape: {image.shape}")
-
-        try:
-            # Ensure input is BGR
-            if len(image.shape) != 3 or image.shape[2] != 3:
-                logger.error(f"Invalid input image shape: {image.shape}")
-                raise ValueError("Input must be BGR image with shape HxWx3")
-
-            # Run preprocessing asynchronously
-            preproc_future = self.executor.submit(self._preprocess_image, image)
-            
-            # Wait for preprocessing to complete
-            processed, orig_shape, new_size = preproc_future.result()
-            logger.debug(f"Preprocessed image from {orig_shape} to {new_size}")
-
-            # Get input shape from model
-            input_shape = self.session.get_inputs()[0].shape
-            logger.debug(f"Model input shape: {input_shape}")
-            logger.debug(f"Processed image shape: {processed.shape}")
-
-            # Validate processed image shape
-            if len(processed.shape) != 4:
-                logger.error(f"Processed image must be 4D (batch, height, width, channels), got shape: {processed.shape}")
-                return {"detections": [], "plates": [], "inference_time": 0.0}
-
-            # Run inference in main thread (where session was created)
-            logger.debug("Running WPOD-NET inference...")
-            try:
-                # Create feed dictionary using all model inputs
-                feed = {input.name: processed for input in self.session.get_inputs()}
-                
-                # Run inference in main thread (ONNX sessions are not thread-safe)
-                outputs = self.session.run(None, feed)[0]
-                
-                # Remove batch dimension if present
-                if outputs.ndim == 4:
-                    outputs = outputs[0]
-                logger.debug(f"Inference output shape: {outputs.shape}")
-                
-            except Exception as e:
-                logger.error(f"Error running WPOD-NET inference: {e}")
-                logger.error(f"Processed input shapes: {[v.shape for v in feed.values()]}")
-                logger.error(f"Expected input names: {[inp.name for inp in self.session.get_inputs()]}")
-                return {"detections": [], "plates": [], "inference_time": 0.0}
-
-            # Run post-processing asynchronously
-            postproc_future = self.executor.submit(self._detect_plates, image, processed, outputs)
-            labels = postproc_future.result()
-            logger.debug(f"Found {len(labels)} potential license plates")
-            
-            # Prepare results
-            detections = []
-            plates = []
-            for i, label in enumerate(labels):
-                # Add detection info
-                detection_info = {
-                    'points': label.pts.T.tolist(),
-                    'confidence': float(label.prob()),
-                    'center': label.cc().tolist(),
-                    'width': int(label.wh()[0]),
-                    'height': int(label.wh()[1])
-                }
-                detections.append(detection_info)
-                logger.debug(f"Detection {i+1}: confidence={detection_info['confidence']:.3f}, "
-                          f"width={detection_info['width']}, height={detection_info['height']}")
-                
-                # Add warped plate
-                plate = self._warp_plate(image, label)
-                plates.append(plate)
-                logger.debug(f"Warped plate {i+1} shape: {plate.shape}")
-            
-            inference_time = time.time() - start_time
-            logger.info(f"License plate detection completed in {inference_time:.3f}s. "
-                       f"Found {len(detections)} plates.")
-            
-            return {
-                'detections': detections,
-                'plates': plates,
-                'inference_time': inference_time
-            }
-        except Exception as e:
-            logger.error(f"Error in detect method: {e}")
-            return {"detections": [], "plates": [], "inference_time": 0.0}
-
-    def draw_detections(self, image: np.ndarray, detections: List[dict], 
-                       color: tuple = (0, 255, 0), thickness: int = 2) -> np.ndarray:
-        """
-        Draw detected license plates on the image.
-        
-        Args:
-            image: Input image (BGR format)
-            detections: List of detection dictionaries from detect()['detections']
-            color: BGR tuple for drawing
-            thickness: Line thickness
-            
-        Returns:
-            Image with drawn detections
-        """
-        output = image.copy()
-        for det in detections:
-            pts = np.array(det['points'], dtype=np.int32)
-            cv2.polylines(output, [pts], True, color, thickness)
-            # Draw confidence score at center
-            center = np.mean(pts, axis=0).astype(int)
-            cv2.putText(output, f"{det['confidence']:.2f}", 
-                       tuple(center), cv2.FONT_HERSHEY_SIMPLEX, 
-                       0.6, color, 2)
-        return output
-
-    @staticmethod
-    def write_labels(file_path: str, labels: List[Label], write_probs: bool = True) -> None:
-        """
-        Write labels to file.
-        
-        Args:
-            file_path: Path to output file
-            labels: List of Label objects
-            write_probs: Whether to include confidence scores
-        """
-        with open(file_path, 'w') as fd:
-            for l in labels:
-                cc, wh = l.cc(), l.wh()
-                prob = l.prob()
-                if prob is not None and write_probs:
-                    fd.write('%d %f %f %f %f %f\n' % (
-                        l.cl(), cc[0], cc[1], wh[0], wh[1], prob))
-                else:
-                    fd.write('%d %f %f %f %f\n' % (
-                        l.cl(), cc[0], cc[1], wh[0], wh[1]))
-
-    @staticmethod
-    def read_labels(file_path: str) -> List[Label]:
-        """
-        Read labels from file.
-        
-        Args:
-            file_path: Path to input file
-            
-        Returns:
-            List of Label objects
-        """
-        if not os.path.isfile(file_path):
-            return []
-
-        labels = []
-        with open(file_path, 'r') as fd:
-            for line in fd:
-                v = line.strip().split()
-                cl = int(v[0])
-                ccx, ccy = float(v[1]), float(v[2])
-                w, h = float(v[3]), float(v[4])
-                prob = float(v[5]) if len(v) == 6 else None
-                cc = np.array([ccx, ccy])
-                wh = np.array([w, h])
-                labels.append(Label(cl, cc - wh/2, cc + wh/2, prob=prob))
-        return labels
 
     def _preprocess_image(self, image: np.ndarray) -> Tuple[np.ndarray, Tuple[int, int], Tuple[int, int]]:
         """
@@ -530,7 +355,75 @@ class LicensePlateDetector:
         H = V[-1, :].reshape((3, 3))
         return H / H[2, 2]
 
-    def __del__(self):
-        """Clean up thread pool on destruction."""
-        if hasattr(self, 'executor'):
-            self.executor.shutdown(wait=True)
+    def draw_detections(self, image: np.ndarray, detections: List[dict], 
+                       color: tuple = (0, 255, 0), thickness: int = 2) -> np.ndarray:
+        """
+        Draw detected license plates on the image.
+        
+        Args:
+            image: Input image (BGR format)
+            detections: List of detection dictionaries from detect()['detections']
+            color: BGR tuple for drawing
+            thickness: Line thickness
+            
+        Returns:
+            Image with drawn detections
+        """
+        output = image.copy()
+        for det in detections:
+            pts = np.array(det['points'], dtype=np.int32)
+            cv2.polylines(output, [pts], True, color, thickness)
+            # Draw confidence score at center
+            center = np.mean(pts, axis=0).astype(int)
+            cv2.putText(output, f"{det['confidence']:.2f}", 
+                       tuple(center), cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.6, color, 2)
+        return output
+
+    @staticmethod
+    def write_labels(file_path: str, labels: List[Label], write_probs: bool = True) -> None:
+        """
+        Write labels to file.
+        
+        Args:
+            file_path: Path to output file
+            labels: List of Label objects
+            write_probs: Whether to include confidence scores
+        """
+        with open(file_path, 'w') as fd:
+            for l in labels:
+                cc, wh = l.cc(), l.wh()
+                prob = l.prob()
+                if prob is not None and write_probs:
+                    fd.write('%d %f %f %f %f %f\n' % (
+                        l.cl(), cc[0], cc[1], wh[0], wh[1], prob))
+                else:
+                    fd.write('%d %f %f %f %f\n' % (
+                        l.cl(), cc[0], cc[1], wh[0], wh[1]))
+
+    @staticmethod
+    def read_labels(file_path: str) -> List[Label]:
+        """
+        Read labels from file.
+        
+        Args:
+            file_path: Path to input file
+            
+        Returns:
+            List of Label objects
+        """
+        if not os.path.isfile(file_path):
+            return []
+
+        labels = []
+        with open(file_path, 'r') as fd:
+            for line in fd:
+                v = line.strip().split()
+                cl = int(v[0])
+                ccx, ccy = float(v[1]), float(v[2])
+                w, h = float(v[3]), float(v[4])
+                prob = float(v[5]) if len(v) == 6 else None
+                cc = np.array([ccx, ccy])
+                wh = np.array([w, h])
+                labels.append(Label(cl, cc - wh/2, cc + wh/2, prob=prob))
+        return labels
