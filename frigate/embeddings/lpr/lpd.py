@@ -140,7 +140,6 @@ class LicensePlateDetector:
         logger.info("LPR: LicensePlateDetector initialized successfully")
         # Use 3 worker threads: 1 for preprocessing, 1 for inference, 1 for postprocessing
         self.executor = ThreadPoolExecutor(max_workers=3)
-        self.gpu_lock = Lock()
 
     def detect(self, image: np.ndarray) -> dict:
         """
@@ -180,18 +179,22 @@ class LicensePlateDetector:
                 logger.error(f"Processed image must be 4D (batch, height, width, channels), got shape: {processed.shape}")
                 return {"detections": [], "plates": [], "inference_time": 0.0}
 
-            # Run inference in main thread to maintain CUDA context
+            # Run inference in main thread (where session was created)
             logger.debug("Running WPOD-NET inference...")
             try:
-                with self.gpu_lock:
-                    outputs = self.session.run(None, feed_dict)[0]
-                    if outputs.ndim == 4:
-                        outputs = outputs[0]
-                    logger.debug(f"Inference output shape: {outputs.shape}")
-            except Exception as e:
+                outputs = self.session.run(None, feed_dict)[0]
+                if outputs.ndim == 4:
+                    outputs = outputs[0]
+                logger.debug(f"Inference output shape: {outputs.shape}")
+            except (RuntimeError, ValueError) as e:
+                # Specific error handling for ONNX runtime errors
                 logger.error(f"Error running WPOD-NET inference: {e}")
                 logger.error(f"Processed input shapes: {[v.shape for v in feed_dict.values()]}")
                 logger.error(f"Expected input names: {[inp.name for inp in self.session.get_inputs()]}")
+                return {"detections": [], "plates": [], "inference_time": 0.0}
+            except Exception as e:
+                # Catch-all for unexpected errors
+                logger.error(f"Unexpected error in WPOD-NET inference: {e}")
                 return {"detections": [], "plates": [], "inference_time": 0.0}
 
             # Run post-processing asynchronously (CPU work is safe in thread pool)
