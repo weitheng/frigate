@@ -120,7 +120,7 @@ class LicensePlateRecognition:
 
         # Save raw plate image for debugging if event_id is provided
         if event_id:
-            raw_filename = f"raw_{event_id}.jpg"
+            raw_filename = f"raw_{event_id}_{int(time.time())}.jpg"
             self._save_debug_image_async(os.path.join(self.debug_dir, raw_filename), image)
 
         # Run recognition on the plate image
@@ -141,7 +141,7 @@ class LicensePlateRecognition:
 
                 # Save debug image (image is already in BGR format)
                 try:
-                    filename = f"{plate}_{int(avg_confidence * 100)}_{event_id}.jpg" if event_id else f"{plate}_{int(avg_confidence * 100)}.jpg"
+                    filename = f"{plate}_{int(avg_confidence * 100)}_{event_id}_{int(time.time())}.jpg" if event_id else f"{plate}_{int(avg_confidence * 100)}_{int(time.time())}.jpg"
                     self._save_debug_image_async(os.path.join(self.debug_dir, filename), image)
                 except Exception as e:
                     logger.warning(f"Failed to save debug image: {e}")

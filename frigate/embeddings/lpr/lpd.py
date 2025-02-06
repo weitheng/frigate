@@ -160,65 +160,70 @@ class LicensePlateDetector:
         start_time = time.time()
         logger.debug(f"Starting license plate detection on image shape: {image.shape}")
 
-        # Ensure input is BGR
-        if len(image.shape) != 3 or image.shape[2] != 3:
-            logger.error(f"Invalid input image shape: {image.shape}")
-            raise ValueError("Input must be BGR image with shape HxWx3")
+        try:
+            # Ensure input is BGR
+            if len(image.shape) != 3 or image.shape[2] != 3:
+                logger.error(f"Invalid input image shape: {image.shape}")
+                raise ValueError("Input must be BGR image with shape HxWx3")
 
-        preproc_future = self.executor.submit(self._preprocess_image, image)
-        processed, orig_shape, new_size = preproc_future.result()
-        logger.debug(f"Preprocessed image from {orig_shape} to {new_size}")
+            # Run preprocessing asynchronously
+            preproc_future = self.executor.submit(self._preprocess_image, image)
+            feed_dict, processed, orig_shape, new_size = preproc_future.result()
+            logger.debug(f"Preprocessed image from {orig_shape} to {new_size}")
 
-        input_shape = self.session.get_inputs()[0].shape
-        logger.debug(f"Model input shape: {input_shape}")
-        logger.debug(f"Processed image shape: {processed.shape}")
+            # Additional validation after preprocessing
+            input_shape = self.session.get_inputs()[0].shape
+            logger.debug(f"Model input shape: {input_shape}")
+            logger.debug(f"Processed image shape: {processed.shape}")
 
-        if len(processed.shape) != 4:
-            logger.error(f"Processed image must be 4D (batch, height, width, channels), got shape: {processed.shape}")
-            return {"detections": [], "plates": []}
+            if len(processed.shape) != 4:
+                logger.error(f"Processed image must be 4D (batch, height, width, channels), got shape: {processed.shape}")
+                return {"detections": [], "plates": [], "inference_time": 0.0}
 
-        inference_future = self.executor.submit(self._run_inference, processed)
-        outputs = inference_future.result()
-        if outputs is None:
-            return {"detections": [], "plates": []}
+            # Run inference asynchronously
+            inference_future = self.executor.submit(self._run_inference, feed_dict)
+            outputs = inference_future.result()
+            if outputs is None:
+                return {"detections": [], "plates": [], "inference_time": 0.0}
 
-        # Asynchronously run post-processing to detect plates
-        logger.debug("Running post-processing detections asynchronously...")
-        postproc_future = self.executor.submit(self._detect_plates, image, processed, outputs)
-        labels = postproc_future.result()
+            # Run post-processing asynchronously
+            postproc_future = self.executor.submit(self._detect_plates, image, processed, outputs)
+            labels = postproc_future.result()
+            logger.debug(f"Found {len(labels)} potential license plates")
 
-        logger.debug(f"Found {len(labels)} potential license plates")
-        
-        # Prepare results
-        detections = []
-        plates = []
-        for i, label in enumerate(labels):
-            # Add detection info
-            detection_info = {
-                'points': label.pts.T.tolist(),
-                'confidence': float(label.prob()),
-                'center': label.cc().tolist(),
-                'width': int(label.wh()[0]),
-                'height': int(label.wh()[1])
-            }
-            detections.append(detection_info)
-            logger.debug(f"Detection {i+1}: confidence={detection_info['confidence']:.3f}, "
-                      f"width={detection_info['width']}, height={detection_info['height']}")
+            # Prepare results
+            detections = []
+            plates = []
+            for i, label in enumerate(labels):
+                # Add detection info
+                detection_info = {
+                    'points': label.pts.T.tolist(),
+                    'confidence': float(label.prob()),
+                    'center': label.cc().tolist(),
+                    'width': int(label.wh()[0]),
+                    'height': int(label.wh()[1])
+                }
+                detections.append(detection_info)
+                logger.debug(f"Detection {i+1}: confidence={detection_info['confidence']:.3f}, "
+                          f"width={detection_info['width']}, height={detection_info['height']}")
+                
+                # Add warped plate
+                plate = self._warp_plate(image, label)
+                plates.append(plate)
+                logger.debug(f"Warped plate {i+1} shape: {plate.shape}")
+
+            inference_time = time.time() - start_time
+            logger.info(f"License plate detection completed in {inference_time:.3f}s. "
+                       f"Found {len(detections)} plates.")
             
-            # Add warped plate
-            plate = self._warp_plate(image, label)
-            plates.append(plate)
-            logger.debug(f"Warped plate {i+1} shape: {plate.shape}")
-
-        inference_time = time.time() - start_time
-        logger.info(f"License plate detection completed in {inference_time:.3f}s. "
-                   f"Found {len(detections)} plates.")
-        
-        return {
-            'detections': detections,
-            'plates': plates,
-            'inference_time': inference_time
-        }
+            return {
+                'detections': detections,
+                'plates': plates,
+                'inference_time': inference_time
+            }
+        except Exception as e:
+            logger.error(f"Error in detect method: {e}")
+            return {"detections": [], "plates": [], "inference_time": 0.0}
 
     def draw_detections(self, image: np.ndarray, detections: List[dict], 
                        color: tuple = (0, 255, 0), thickness: int = 2) -> np.ndarray:
@@ -293,7 +298,7 @@ class LicensePlateDetector:
                 labels.append(Label(cl, cc - wh/2, cc + wh/2, prob=prob))
         return labels
 
-    def _preprocess_image(self, image: np.ndarray) -> Tuple[np.ndarray, Tuple[int, int], Tuple[int, int]]:
+    def _preprocess_image(self, image: np.ndarray) -> Tuple[dict, np.ndarray, Tuple[int, int], Tuple[int, int]]:
         """
         Preprocess the input image.
         
@@ -365,21 +370,30 @@ class LicensePlateDetector:
         if processed.shape[1] % self.net_stride != 0 or processed.shape[2] % self.net_stride != 0:
             raise ValueError(f"Height and width must be multiples of {self.net_stride}")
             
-        return processed, (orig_h, orig_w), new_size
+        # Create feed dictionary with correct input name
+        input_name = self.session.get_inputs()[0].name  # This should be "input"
+        feed = {input_name: processed}
+        
+        logger.debug(f"Created feed dictionary with input name: {input_name}")
+        logger.debug(f"Feed dictionary shapes: {[v.shape for v in feed.values()]}")
+        
+        return feed, processed, (orig_h, orig_w), new_size
 
-    def _run_inference(self, processed: np.ndarray) -> Optional[np.ndarray]:
+    def _run_inference(self, processed_feed: dict) -> Optional[np.ndarray]:
         with self.gpu_lock:
             try:
                 logger.debug("Running WPOD-NET inference asynchronously...")
-                feed = {inp.name: processed for inp in self.session.get_inputs()}
-                outputs = self.session.run(None, feed)[0]
+                logger.debug(f"Input names available: {[inp.name for inp in self.session.get_inputs()]}")
+                logger.debug(f"Feed dictionary keys: {list(processed_feed.keys())}")
+                outputs = self.session.run(None, processed_feed)[0]
                 if outputs.ndim == 4:
                     outputs = outputs[0]
                 logger.debug(f"Inference output shape: {outputs.shape}")
                 return outputs
             except Exception as e:
                 logger.error(f"Error running WPOD-NET inference: {e}")
-                logger.error(f"Processed image shape: {processed.shape}, dtype: {processed.dtype}")
+                logger.error(f"Processed input shapes: {[v.shape for v in processed_feed.values()]}")
+                logger.error(f"Expected input names: {[inp.name for inp in self.session.get_inputs()]}")
                 return None
 
     def _detect_plates(self, original_img: np.ndarray, processed_img: np.ndarray, 
