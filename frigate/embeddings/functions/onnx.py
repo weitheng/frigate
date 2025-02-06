@@ -266,41 +266,8 @@ class GenericONNXEmbedding:
                 raise ValueError("WPOD-NET supports single input only. Batch inputs are not supported.")
             if not isinstance(inputs[0], np.ndarray):
                 raise ValueError("WPOD-NET expects numpy array input")
-            
             try:
-                # Run preprocessing in main thread
-                processed = self.lpd._preprocess_image(inputs[0])
-                
-                # Run inference in main thread
-                feed = {input.name: processed for input in self.lpd.session.get_inputs()}
-                outputs = self.lpd.session.run(None, feed)[0]
-                
-                # Run postprocessing async
-                postproc_future = self.lpd.executor.submit(
-                    self.lpd._detect_plates,
-                    inputs[0].copy(),
-                    processed.copy(),
-                    outputs.copy()
-                )
-                labels = postproc_future.result()
-                
-                # Prepare results
-                detections = []
-                plates = []
-                for label in labels:
-                    detections.append({
-                        'points': label.pts.T.tolist(),
-                        'confidence': float(label.prob()),
-                        'center': label.cc().tolist(),
-                        'width': int(label.wh()[0]),
-                        'height': int(label.wh()[1])
-                    })
-                    plates.append(self.lpd._warp_plate(inputs[0], label))
-                
-                return {
-                    'detections': detections,
-                    'plates': plates
-                }
+                return self.lpd.detect(inputs[0])
             except Exception as e:
                 logger.error(f"Error in WPOD-NET detection: {e}")
                 return {"detections": [], "plates": []}
@@ -309,7 +276,7 @@ class GenericONNXEmbedding:
         processed_inputs = self._preprocess_inputs(inputs)
         input_names = self.runner.get_input_names()
         onnx_inputs = {name: [] for name in input_names}
-        
+        input: dict[str, any]
         for input in processed_inputs:
             for key, value in input.items():
                 if key in input_names:
