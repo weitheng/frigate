@@ -166,7 +166,7 @@ class LicensePlateDetector:
                 logger.error(f"Invalid input image shape: {image.shape}")
                 raise ValueError("Input must be BGR image with shape HxWx3")
 
-            # Run preprocessing asynchronously
+            # Run preprocessing asynchronously (CPU work is safe in thread pool)
             preproc_future = self.executor.submit(self._preprocess_image, image)
             feed_dict, processed, orig_shape, new_size = preproc_future.result()
             logger.debug(f"Preprocessed image from {orig_shape} to {new_size}")
@@ -180,13 +180,21 @@ class LicensePlateDetector:
                 logger.error(f"Processed image must be 4D (batch, height, width, channels), got shape: {processed.shape}")
                 return {"detections": [], "plates": [], "inference_time": 0.0}
 
-            # Run inference asynchronously
-            inference_future = self.executor.submit(self._run_inference, feed_dict)
-            outputs = inference_future.result()
-            if outputs is None:
+            # Run inference in main thread to maintain CUDA context
+            logger.debug("Running WPOD-NET inference...")
+            try:
+                with self.gpu_lock:
+                    outputs = self.session.run(None, feed_dict)[0]
+                    if outputs.ndim == 4:
+                        outputs = outputs[0]
+                    logger.debug(f"Inference output shape: {outputs.shape}")
+            except Exception as e:
+                logger.error(f"Error running WPOD-NET inference: {e}")
+                logger.error(f"Processed input shapes: {[v.shape for v in feed_dict.values()]}")
+                logger.error(f"Expected input names: {[inp.name for inp in self.session.get_inputs()]}")
                 return {"detections": [], "plates": [], "inference_time": 0.0}
 
-            # Run post-processing asynchronously
+            # Run post-processing asynchronously (CPU work is safe in thread pool)
             postproc_future = self.executor.submit(self._detect_plates, image, processed, outputs)
             labels = postproc_future.result()
             logger.debug(f"Found {len(labels)} potential license plates")
@@ -378,23 +386,6 @@ class LicensePlateDetector:
         logger.debug(f"Feed dictionary shapes: {[v.shape for v in feed.values()]}")
         
         return feed, processed, (orig_h, orig_w), new_size
-
-    def _run_inference(self, processed_feed: dict) -> Optional[np.ndarray]:
-        with self.gpu_lock:
-            try:
-                logger.debug("Running WPOD-NET inference asynchronously...")
-                logger.debug(f"Input names available: {[inp.name for inp in self.session.get_inputs()]}")
-                logger.debug(f"Feed dictionary keys: {list(processed_feed.keys())}")
-                outputs = self.session.run(None, processed_feed)[0]
-                if outputs.ndim == 4:
-                    outputs = outputs[0]
-                logger.debug(f"Inference output shape: {outputs.shape}")
-                return outputs
-            except Exception as e:
-                logger.error(f"Error running WPOD-NET inference: {e}")
-                logger.error(f"Processed input shapes: {[v.shape for v in processed_feed.values()]}")
-                logger.error(f"Expected input names: {[inp.name for inp in self.session.get_inputs()]}")
-                return None
 
     def _detect_plates(self, original_img: np.ndarray, processed_img: np.ndarray, 
                       model_output: np.ndarray) -> List[DLabel]:
