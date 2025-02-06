@@ -138,8 +138,9 @@ class LicensePlateDetector:
         self.nms_threshold = nms_threshold or 0.1  # Default if not in config
         self.net_stride = 16
         logger.info("LPR: LicensePlateDetector initialized successfully")
-        # Use 3 worker threads: 1 for preprocessing, 1 for inference, 1 for postprocessing
-        self.executor = ThreadPoolExecutor(max_workers=3)
+        # Use 2 worker threads: 1 for preprocessing, 1 for postprocessing
+        self.executor = ThreadPoolExecutor(max_workers=2)
+        self.lock = Lock()  # For thread-safe operations
 
     def detect(self, image: np.ndarray) -> dict:
         """
@@ -165,16 +166,19 @@ class LicensePlateDetector:
                 logger.error(f"Invalid input image shape: {image.shape}")
                 raise ValueError("Input must be BGR image with shape HxWx3")
 
-            # Run preprocessing asynchronously (CPU work is safe in thread pool)
+            # Run preprocessing asynchronously
             preproc_future = self.executor.submit(self._preprocess_image, image)
-            feed_dict, processed, orig_shape, new_size = preproc_future.result()
+            
+            # Wait for preprocessing to complete
+            processed, orig_shape, new_size = preproc_future.result()
             logger.debug(f"Preprocessed image from {orig_shape} to {new_size}")
 
-            # Additional validation after preprocessing
+            # Get input shape from model
             input_shape = self.session.get_inputs()[0].shape
             logger.debug(f"Model input shape: {input_shape}")
             logger.debug(f"Processed image shape: {processed.shape}")
 
+            # Validate processed image shape
             if len(processed.shape) != 4:
                 logger.error(f"Processed image must be 4D (batch, height, width, channels), got shape: {processed.shape}")
                 return {"detections": [], "plates": [], "inference_time": 0.0}
@@ -182,26 +186,28 @@ class LicensePlateDetector:
             # Run inference in main thread (where session was created)
             logger.debug("Running WPOD-NET inference...")
             try:
-                outputs = self.session.run(None, feed_dict)[0]
+                # Create feed dictionary using all model inputs
+                feed = {input.name: processed for input in self.session.get_inputs()}
+                
+                # Run inference in main thread (ONNX sessions are not thread-safe)
+                outputs = self.session.run(None, feed)[0]
+                
+                # Remove batch dimension if present
                 if outputs.ndim == 4:
                     outputs = outputs[0]
                 logger.debug(f"Inference output shape: {outputs.shape}")
-            except (RuntimeError, ValueError) as e:
-                # Specific error handling for ONNX runtime errors
+                
+            except Exception as e:
                 logger.error(f"Error running WPOD-NET inference: {e}")
-                logger.error(f"Processed input shapes: {[v.shape for v in feed_dict.values()]}")
+                logger.error(f"Processed input shapes: {[v.shape for v in feed.values()]}")
                 logger.error(f"Expected input names: {[inp.name for inp in self.session.get_inputs()]}")
                 return {"detections": [], "plates": [], "inference_time": 0.0}
-            except Exception as e:
-                # Catch-all for unexpected errors
-                logger.error(f"Unexpected error in WPOD-NET inference: {e}")
-                return {"detections": [], "plates": [], "inference_time": 0.0}
 
-            # Run post-processing asynchronously (CPU work is safe in thread pool)
+            # Run post-processing asynchronously
             postproc_future = self.executor.submit(self._detect_plates, image, processed, outputs)
             labels = postproc_future.result()
             logger.debug(f"Found {len(labels)} potential license plates")
-
+            
             # Prepare results
             detections = []
             plates = []
@@ -222,7 +228,7 @@ class LicensePlateDetector:
                 plate = self._warp_plate(image, label)
                 plates.append(plate)
                 logger.debug(f"Warped plate {i+1} shape: {plate.shape}")
-
+            
             inference_time = time.time() - start_time
             logger.info(f"License plate detection completed in {inference_time:.3f}s. "
                        f"Found {len(detections)} plates.")
@@ -309,9 +315,9 @@ class LicensePlateDetector:
                 labels.append(Label(cl, cc - wh/2, cc + wh/2, prob=prob))
         return labels
 
-    def _preprocess_image(self, image: np.ndarray) -> Tuple[dict, np.ndarray, Tuple[int, int], Tuple[int, int]]:
+    def _preprocess_image(self, image: np.ndarray) -> Tuple[np.ndarray, Tuple[int, int], Tuple[int, int]]:
         """
-        Preprocess the input image.
+        Preprocess the input image in a thread-safe manner.
         
         Args:
             image: Input image in BGR format (height x width x 3)
@@ -321,79 +327,51 @@ class LicensePlateDetector:
             - Original shape (H, W)
             - New size (W, H)
         """
-        if not isinstance(image, np.ndarray):
-            raise ValueError("Input image must be a NumPy array")
-        if image.size == 0:
-            raise ValueError("Empty image provided")
+        with self.lock:
+            if not isinstance(image, np.ndarray):
+                raise ValueError("Input image must be a NumPy array")
+            if image.size == 0:
+                raise ValueError("Empty image provided")
 
-        # Get original dimensions
-        orig_h, orig_w = image.shape[:2]
-        min_dim = min(orig_h, orig_w)
-        factor = float(self.max_dimension) / min_dim
-        
-        # Compute new size (ensure multiple of stride)
-        new_w = int(orig_w * factor)
-        new_h = int(orig_h * factor)
-        if new_w % self.net_stride != 0:
-            new_w += self.net_stride - (new_w % self.net_stride)
-        if new_h % self.net_stride != 0:
-            new_h += self.net_stride - (new_h % self.net_stride)
-        new_size = (new_w, new_h)
-        
-        logger.debug(f"Resizing image from {(orig_h, orig_w)} to {(new_h, new_w)}")
-        
-        # Resize and normalize
-        resized = cv2.resize(image, new_size)
-        resized = resized.astype(np.float32) / 255.0
-        
-        # Get model's input shape
-        input_shape = self.session.get_inputs()[0].shape
-        logger.debug(f"Model input shape: {input_shape}")
-        
-        # Handle dynamic dimensions while keeping NHWC format
-        if any(isinstance(dim, str) for dim in input_shape):
-            # We know the format is [N, M1, M2, 3] where:
-            # N = batch size (we use 1)
-            # M1 = height (use our resized height)
-            # M2 = width (use our resized width)
-            # 3 = channels (fixed)
-            if input_shape[-1] != 3:
-                raise ValueError(f"Expected 3 channels in last dimension, got {input_shape[-1]}")
-                
-            logger.debug(f"Using dynamic dimensions: [1, {new_h}, {new_w}, 3]")
+            # Get original dimensions
+            orig_h, orig_w = image.shape[:2]
+            min_dim = min(orig_h, orig_w)
+            factor = float(self.max_dimension) / min_dim
+            
+            # Compute new size (ensure multiple of stride)
+            new_w = int(orig_w * factor)
+            new_h = int(orig_h * factor)
+            if new_w % self.net_stride != 0:
+                new_w += self.net_stride - (new_w % self.net_stride)
+            if new_h % self.net_stride != 0:
+                new_h += self.net_stride - (new_h % self.net_stride)
+            new_size = (new_w, new_h)
+            
+            logger.debug(f"Resizing image from {(orig_h, orig_w)} to {(new_h, new_w)}")
+            
+            # Resize and normalize
+            resized = cv2.resize(image, new_size)
+            resized = resized.astype(np.float32) / 255.0
+            
+            # Reshape to NHWC format
             processed = resized.reshape(1, new_h, new_w, 3)
-        else:
-            # For fixed dimensions, ensure we match them
-            target_h = input_shape[1] if len(input_shape) > 1 else new_h
-            target_w = input_shape[2] if len(input_shape) > 2 else new_w
-            if target_h != new_h or target_w != new_w:
-                logger.debug(f"Resizing to match fixed dimensions: {target_h}x{target_w}")
-                resized = cv2.resize(resized, (target_w, target_h))
-            processed = resized.reshape(1, target_h, target_w, 3)
             
-        logger.debug(f"Final processed shape: {processed.shape}")
-        
-        # Final validation
-        if processed.shape[0] != 1:
-            raise ValueError(f"Batch dimension must be 1, got {processed.shape[0]}")
-        if processed.shape[-1] != 3:
-            raise ValueError(f"Channel dimension must be 3, got {processed.shape[-1]}")
-        if processed.shape[1] % self.net_stride != 0 or processed.shape[2] % self.net_stride != 0:
-            raise ValueError(f"Height and width must be multiples of {self.net_stride}")
+            logger.debug(f"Final processed shape: {processed.shape}")
             
-        # Create feed dictionary with correct input name
-        input_name = self.session.get_inputs()[0].name  # This should be "input"
-        feed = {input_name: processed}
-        
-        logger.debug(f"Created feed dictionary with input name: {input_name}")
-        logger.debug(f"Feed dictionary shapes: {[v.shape for v in feed.values()]}")
-        
-        return feed, processed, (orig_h, orig_w), new_size
+            # Final validation
+            if processed.shape[0] != 1:
+                raise ValueError(f"Batch dimension must be 1, got {processed.shape[0]}")
+            if processed.shape[-1] != 3:
+                raise ValueError(f"Channel dimension must be 3, got {processed.shape[-1]}")
+            if processed.shape[1] % self.net_stride != 0 or processed.shape[2] % self.net_stride != 0:
+                raise ValueError(f"Height and width must be multiples of {self.net_stride}")
+            
+            return processed, (orig_h, orig_w), new_size
 
     def _detect_plates(self, original_img: np.ndarray, processed_img: np.ndarray, 
                       model_output: np.ndarray) -> List[DLabel]:
         """
-        Detect license plates from model output.
+        Detect license plates from model output in a thread-safe manner.
         
         Args:
             original_img: Original input image
@@ -403,43 +381,44 @@ class LicensePlateDetector:
         Returns:
             List of DLabel objects for detected plates
         """
-        logger.debug("Starting plate detection from model output...")
-        
-        # Extract probability scores and affine parameters
-        probs = model_output[..., 0]
-        affines = model_output[..., 2:]
-        
-        # Get detections above threshold
-        ys, xs = np.where(probs > self.confidence_threshold)
-        logger.debug(f"Found {len(ys)} points above confidence threshold {self.confidence_threshold}")
-        
-        labels = []
-        for i, (grid_y, grid_x) in enumerate(zip(ys, xs)):
-            affine = affines[grid_y, grid_x]
-            prob = probs[grid_y, grid_x]
+        with self.lock:
+            logger.debug("Starting plate detection from model output...")
             
-            if np.isnan(affine).any():
-                logger.warning(f"Skipping detection {i+1} due to NaN values in affine parameters")
-                continue
+            # Extract probability scores and affine parameters
+            probs = model_output[..., 0]
+            affines = model_output[..., 2:]
+            
+            # Get detections above threshold
+            ys, xs = np.where(probs > self.confidence_threshold)
+            logger.debug(f"Found {len(ys)} points above confidence threshold {self.confidence_threshold}")
+            
+            labels = []
+            for i, (grid_y, grid_x) in enumerate(zip(ys, xs)):
+                affine = affines[grid_y, grid_x]
+                prob = probs[grid_y, grid_x]
                 
-            # Get plate corners
-            pts = self._compute_plate_corners(affine, grid_x, grid_y)
+                if np.isnan(affine).any():
+                    logger.warning(f"Skipping detection {i+1} due to NaN values in affine parameters")
+                    continue
+                    
+                # Get plate corners
+                pts = self._compute_plate_corners(affine, grid_x, grid_y)
+                
+                # Scale back to original image size
+                h, w = model_output.shape[:2]
+                scale_x = original_img.shape[1] / w
+                scale_y = original_img.shape[0] / h
+                pts[0, :] *= scale_x
+                pts[1, :] *= scale_y
+                
+                # Create DLabel
+                labels.append(DLabel(0, pts, prob))
+                logger.debug(f"Detection {i+1}: confidence={prob:.3f}, points shape={pts.shape}")
             
-            # Scale back to original image size
-            h, w = model_output.shape[:2]
-            scale_x = original_img.shape[1] / w
-            scale_y = original_img.shape[0] / h
-            pts[0, :] *= scale_x
-            pts[1, :] *= scale_y
-            
-            # Create DLabel
-            labels.append(DLabel(0, pts, prob))
-            logger.debug(f"Detection {i+1}: confidence={prob:.3f}, points shape={pts.shape}")
-            
-        # Apply NMS
-        filtered_labels = self._non_max_suppression(labels)
-        logger.debug(f"After NMS: {len(filtered_labels)} detections remaining")
-        return filtered_labels
+            # Apply NMS
+            filtered_labels = self._non_max_suppression(labels)
+            logger.debug(f"After NMS: {len(filtered_labels)} detections remaining")
+            return filtered_labels
 
     def _warp_plate(self, img: np.ndarray, label: DLabel) -> np.ndarray:
         """
@@ -552,5 +531,6 @@ class LicensePlateDetector:
         return H / H[2, 2]
 
     def __del__(self):
+        """Clean up thread pool on destruction."""
         if hasattr(self, 'executor'):
             self.executor.shutdown(wait=True)
