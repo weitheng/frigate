@@ -64,7 +64,7 @@ function App() {
                       <Route path="/system" element={<System />} />
                       <Route path="/config" element={<ConfigEditor />} />
                       <Route path="/logs" element={<Logs />} />
-                        <Route path="/lpr" element={<LPRDebug />} />
+                      <Route path="/lpr" element={<LPRDebug />} />
                       <Route path="/faces" element={<FaceLibrary />} />
                       <Route path="/playground" element={<UIPlayground />} />
                     </Route>
