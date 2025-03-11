@@ -44,8 +44,7 @@ export default function LPRDebug() {
     const categorized: Record<string, string[]> = {
       car_frame: [],
       license_plate_frame: [],
-      license_plate_classified: [],
-      license_plate_rotated: [],
+      license_plate_cropped: [],
       license_plate_resized: [],
       lpr_post: [],
       other: []
