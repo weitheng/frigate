@@ -10,8 +10,11 @@ logger = logging.getLogger(__name__)
 
 class EventMetadataTypeEnum(str, Enum):
     all = ""
+    manual_event_create = "manual_event_create"
+    manual_event_end = "manual_event_end"
     regenerate_description = "regenerate_description"
     sub_label = "sub_label"
+    recognized_license_plate = "recognized_license_plate"
 
 
 class EventMetadataPublisher(Publisher):

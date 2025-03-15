@@ -3,6 +3,8 @@
 import datetime
 import logging
 import os
+import random
+import string
 from functools import reduce
 from pathlib import Path
 from urllib.parse import unquote
@@ -43,9 +45,8 @@ from frigate.api.defs.tags import Tags
 from frigate.comms.event_metadata_updater import EventMetadataTypeEnum
 from frigate.const import CLIPS_DIR
 from frigate.embeddings import EmbeddingsContext
-from frigate.events.external import ExternalEventProcessor
 from frigate.models import Event, ReviewSegment, Timeline
-from frigate.object_processing import TrackedObject, TrackedObjectProcessor
+from frigate.track.object_processing import TrackedObject
 from frigate.util.builtin import get_tz_modifiers
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,7 @@ def events(params: EventsQueryParams = Depends()):
     min_length = params.min_length
     max_length = params.max_length
     event_id = params.event_id
+    recognized_license_plate = params.recognized_license_plate
 
     sort = params.sort
 
@@ -156,6 +158,45 @@ def events(params: EventsQueryParams = Depends()):
 
         sub_label_clause = reduce(operator.or_, sub_label_clauses)
         clauses.append((sub_label_clause))
+
+    if recognized_license_plate != "all":
+        # use matching so joined recognized_license_plates are included
+        # for example a recognized license plate 'ABC123' would get events
+        # with recognized license plates 'ABC123' and 'ABC123, XYZ789'
+        recognized_license_plate_clauses = []
+        filtered_recognized_license_plates = recognized_license_plate.split(",")
+
+        if "None" in filtered_recognized_license_plates:
+            filtered_recognized_license_plates.remove("None")
+            recognized_license_plate_clauses.append(
+                (Event.data["recognized_license_plate"].is_null())
+            )
+
+        for recognized_license_plate in filtered_recognized_license_plates:
+            # Exact matching plus list inclusion
+            recognized_license_plate_clauses.append(
+                (
+                    Event.data["recognized_license_plate"].cast("text")
+                    == recognized_license_plate
+                )
+            )
+            recognized_license_plate_clauses.append(
+                (
+                    Event.data["recognized_license_plate"].cast("text")
+                    % f"*{recognized_license_plate},*"
+                )
+            )
+            recognized_license_plate_clauses.append(
+                (
+                    Event.data["recognized_license_plate"].cast("text")
+                    % f"*, {recognized_license_plate}*"
+                )
+            )
+
+        recognized_license_plate_clause = reduce(
+            operator.or_, recognized_license_plate_clauses
+        )
+        clauses.append((recognized_license_plate_clause))
 
     if zones != "all":
         # use matching so events with multiple zones
@@ -339,6 +380,8 @@ def events_explore(limit: int = 10):
                         "average_estimated_speed",
                         "velocity_angle",
                         "path_data",
+                        "recognized_license_plate",
+                        "recognized_license_plate_score",
                     ]
                 },
                 "event_count": label_counts[event.label],
@@ -396,6 +439,7 @@ def events_search(request: Request, params: EventsSearchQueryParams = Depends())
     has_clip = params.has_clip
     has_snapshot = params.has_snapshot
     is_submitted = params.is_submitted
+    recognized_license_plate = params.recognized_license_plate
 
     # for similarity search
     event_id = params.event_id
@@ -464,6 +508,45 @@ def events_search(request: Request, params: EventsSearchQueryParams = Depends())
             zone_clauses.append((Event.zones.cast("text") % f'*"{zone}"*'))
 
         event_filters.append((reduce(operator.or_, zone_clauses)))
+
+    if recognized_license_plate != "all":
+        # use matching so joined recognized_license_plates are included
+        # for example an recognized_license_plate 'ABC123' would get events
+        # with recognized_license_plates 'ABC123' and 'ABC123, XYZ789'
+        recognized_license_plate_clauses = []
+        filtered_recognized_license_plates = recognized_license_plate.split(",")
+
+        if "None" in filtered_recognized_license_plates:
+            filtered_recognized_license_plates.remove("None")
+            recognized_license_plate_clauses.append(
+                (Event.data["recognized_license_plate"].is_null())
+            )
+
+        for recognized_license_plate in filtered_recognized_license_plates:
+            # Exact matching plus list inclusion
+            recognized_license_plate_clauses.append(
+                (
+                    Event.data["recognized_license_plate"].cast("text")
+                    == recognized_license_plate
+                )
+            )
+            recognized_license_plate_clauses.append(
+                (
+                    Event.data["recognized_license_plate"].cast("text")
+                    % f"*{recognized_license_plate},*"
+                )
+            )
+            recognized_license_plate_clauses.append(
+                (
+                    Event.data["recognized_license_plate"].cast("text")
+                    % f"*, {recognized_license_plate}*"
+                )
+            )
+
+        recognized_license_plate_clause = reduce(
+            operator.or_, recognized_license_plate_clauses
+        )
+        event_filters.append((recognized_license_plate_clause))
 
     if after:
         event_filters.append((Event.start_time > after))
@@ -626,6 +709,8 @@ def events_search(request: Request, params: EventsSearchQueryParams = Depends())
                 "average_estimated_speed",
                 "velocity_angle",
                 "path_data",
+                "recognized_license_plate",
+                "recognized_license_plate_score",
             ]
         }
 
@@ -680,6 +765,7 @@ def events_summary(params: EventsSummaryQueryParams = Depends()):
             Event.camera,
             Event.label,
             Event.sub_label,
+            Event.data,
             fn.strftime(
                 "%Y-%m-%d",
                 fn.datetime(
@@ -694,6 +780,7 @@ def events_summary(params: EventsSummaryQueryParams = Depends()):
             Event.camera,
             Event.label,
             Event.sub_label,
+            Event.data,
             (Event.start_time + seconds_offset).cast("int") / (3600 * 24),
             Event.zones,
         )
@@ -1202,28 +1289,25 @@ def create_event(
             status_code=404,
         )
 
-    try:
-        frame_processor: TrackedObjectProcessor = request.app.detected_frames_processor
-        external_processor: ExternalEventProcessor = request.app.external_processor
+    now = datetime.datetime.now().timestamp()
+    rand_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    event_id = f"{now}-{rand_id}"
 
-        frame = frame_processor.get_current_frame(camera_name)
-        event_id = external_processor.create_manual_event(
+    request.app.event_metadata_updater.publish(
+        EventMetadataTypeEnum.manual_event_create,
+        (
+            now,
             camera_name,
             label,
-            body.source_type,
-            body.sub_label,
-            body.score,
-            body.duration,
+            event_id,
             body.include_recording,
+            body.score,
+            body.sub_label,
+            body.duration,
+            body.source_type,
             body.draw,
-            frame,
-        )
-    except Exception as e:
-        logger.error(e)
-        return JSONResponse(
-            content=({"success": False, "message": "An unknown error occurred"}),
-            status_code=500,
-        )
+        ),
+    )
 
     return JSONResponse(
         content=(
@@ -1245,7 +1329,9 @@ def create_event(
 def end_event(request: Request, event_id: str, body: EventsEndBody):
     try:
         end_time = body.end_time or datetime.datetime.now().timestamp()
-        request.app.external_processor.finish_manual_event(event_id, end_time)
+        request.app.event_metadata_updater.publish(
+            EventMetadataTypeEnum.manual_event_end, (event_id, end_time)
+        )
     except Exception:
         return JSONResponse(
             content=(

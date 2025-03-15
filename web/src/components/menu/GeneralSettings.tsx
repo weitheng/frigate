@@ -56,6 +56,7 @@ import { useIsAdmin } from "@/hooks/use-is-admin";
 import SetPasswordDialog from "../overlay/SetPasswordDialog";
 import { toast } from "sonner";
 import axios from "axios";
+import { FrigateConfig } from "@/types/frigateConfig";
 
 type GeneralSettingsProps = {
   className?: string;
@@ -63,7 +64,7 @@ type GeneralSettingsProps = {
 
 export default function GeneralSettings({ className }: GeneralSettingsProps) {
   const { data: profile } = useSWR("profile");
-  const { data: config } = useSWR("config");
+  const { data: config } = useSWR<FrigateConfig>("config");
   const logoutUrl = config?.proxy?.logout_url || "/api/logout";
 
   const { theme, colorScheme, setTheme, setColorScheme } = useTheme();
@@ -251,6 +252,19 @@ export default function GeneralSettings({ className }: GeneralSettingsProps) {
                     >
                       <LuSquarePen className="mr-2 size-4" />
                       <span>Configuration editor</span>
+                    </MenuItem>
+                  </Link>
+                </>
+              )}
+              {isAdmin && isMobile && config?.face_recognition.enabled && (
+                <>
+                  <Link to="/faces">
+                    <MenuItem
+                      className="flex w-full items-center p-2 text-sm"
+                      aria-label="Face Library"
+                    >
+                      <LuSquarePen className="mr-2 size-4" />
+                      <span>Face Library</span>
                     </MenuItem>
                   </Link>
                 </>
