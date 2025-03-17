@@ -97,6 +97,12 @@ class ONNXDetector(DetectionApi):
         elif self.onnx_model_type == ModelTypeEnum.yolov9:
             predictions: np.ndarray = tensor_output[0]
             return post_process_yolov9(predictions, self.w, self.h)
+        elif self.onnx_model_type == ModelTypeEnum.lp_detect:
+            # WPOD-NET model returns probabilities and affine transforms
+            # This is handled by the LicensePlateDetector class in lpr_embedding.py
+            # and the _detect_license_plate method in the LicensePlateProcessingMixin
+            # We just pass through the raw output here
+            return tensor_output
         else:
             raise Exception(
                 f"{self.onnx_model_type} is currently not supported for onnx. See the docs for more info on supported models."

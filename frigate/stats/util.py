@@ -312,8 +312,8 @@ def stats_snapshot(
             )
 
             if "license_plate" not in config.objects.all_objects:
-                stats["embeddings"]["yolov9_plate_detection_speed"] = round(
-                    embeddings_metrics.yolov9_lpr_fps.value * 1000, 2
+                stats["embeddings"]["wpod_plate_detection_speed"] = round(
+                    embeddings_metrics.wpod_lpr_fps.value * 1000, 2
                 )
 
     get_processing_stats(config, stats, hwaccel_errors)

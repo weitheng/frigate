@@ -20,7 +20,7 @@ class LicensePlateModelRunner(DataProcessorModelRunner):
         self.recognition_model = PaddleOCRRecognition(
             model_size=model_size, requestor=requestor, device=device
         )
-        self.yolov9_detection_model = LicensePlateDetector(
+        self.lp_detector_model = LicensePlateDetector(
             model_size=model_size, requestor=requestor, device=device
         )
 
@@ -28,4 +28,4 @@ class LicensePlateModelRunner(DataProcessorModelRunner):
         self.detection_model._load_model_and_utils()
         self.classification_model._load_model_and_utils()
         self.recognition_model._load_model_and_utils()
-        self.yolov9_detection_model._load_model_and_utils()
+        self.lp_detector_model._load_model_and_utils()

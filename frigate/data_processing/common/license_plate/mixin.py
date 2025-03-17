@@ -13,6 +13,7 @@ from Levenshtein import distance
 from pyclipper import ET_CLOSEDPOLYGON, JT_ROUND, PyclipperOffset
 from shapely.geometry import Polygon
 import threading
+from dataclasses import dataclass
 
 from frigate.comms.event_metadata_updater import EventMetadataTypeEnum
 from frigate.const import FRIGATE_LOCALHOST, CLIPS_DIR
@@ -22,6 +23,32 @@ logger = logging.getLogger(__name__)
 
 WRITE_DEBUG_IMAGES = True
 
+@dataclass
+class Detection:
+    """Represents a license plate detection with corner points and confidence score.
+    
+    Attributes:
+        points: Array of shape (2,4) containing x,y coordinates of the 4 corner points
+        prob: Detection confidence score between 0 and 1
+    """
+    points: np.ndarray  # Shape (2,4) array of x,y coordinates
+    prob: float  # Detection confidence score 0-1
+
+    def tl(self) -> np.ndarray:
+        """Get top-left point of detection box.
+        
+        Returns:
+            np.ndarray: [x,y] coordinates of top-left corner
+        """
+        return np.array([min(self.points[0]), min(self.points[1])])
+
+    def br(self) -> np.ndarray:
+        """Get bottom-right point of detection box.
+        
+        Returns:
+            np.ndarray: [x,y] coordinates of bottom-right corner
+        """
+        return np.array([max(self.points[0]), max(self.points[1])])
 
 class LicensePlateProcessingMixin:
     def __init__(self, *args, **kwargs):
@@ -718,55 +745,143 @@ class LicensePlateProcessingMixin:
             image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
         return image
 
-    def _detect_license_plate(self, input: np.ndarray) -> tuple[int, int, int, int]:
+    def _detect_license_plate(self, input: np.ndarray) -> Optional[tuple[tuple[int, int, int, int], np.ndarray, float]]:
+        """Detect license plate using WPOD-NET model.
+        
+        Args:
+            input: Input BGR image as numpy array
+            
+        Returns:
+            Optional tuple containing:
+                - Box coordinates as (x1,y1,x2,y2)
+                - Affine transform matrix
+                - Detection confidence score
+            Returns None if no plate is detected
         """
-        Use a lightweight YOLOv9 model to detect license plates for users without Frigate+
+        logger.debug(f"Starting LP detection on image shape: {input.shape}")
 
-        Return the dimensions of the detected plate as [x1, y1, x2, y2].
-        """
-        predictions = self.model_runner.yolov9_detection_model(input)
+        # Check if model is ready before proceeding
+        if not self.model_runner.lp_detector_model or not self.model_runner.lp_detector_model.runner:
+            logger.debug("License plate detector model not loaded or still initializing")
+            return None
 
-        confidence_threshold = self.lpr_config.detection_threshold
+        # Add input validation
+        if input is None or input.size == 0:
+            logger.debug("Empty input for LP detection")
+            return None
 
-        top_score = -1
-        top_box = None
+        try:
+            # Initialize start time for measuring detection speed
+            start = datetime.datetime.now().timestamp()
 
-        # Loop over predictions
-        for prediction in predictions:
-            score = prediction[6]
-            if score >= confidence_threshold:
-                bbox = prediction[1:5]
-                # Scale boxes back to original image size
-                scale_x = input.shape[1] / 256
-                scale_y = input.shape[0] / 256
-                bbox[0] *= scale_x
-                bbox[1] *= scale_y
-                bbox[2] *= scale_x
-                bbox[3] *= scale_y
+            # Get original dimensions
+            h, w = input.shape[:2]
+            min_dim = min(h, w)
 
-                if score > top_score:
-                    top_score = score
-                    top_box = bbox
+            # Skip if image is too small
+            if min_dim < 64:
+                logger.debug("Image too small for detection: %dx%d", h, w)
+                return None
 
-        # Return the top scoring bounding box if found
-        if top_box is not None:
-            # expand box by 30% to help with OCR
-            expansion = (top_box[2:] - top_box[:2]) * 0.30
+            # Convert to BGR if needed (WPOD-NET expects BGR)
+            if input.shape[-1] == 4:
+                input = cv2.cvtColor(input, cv2.COLOR_BGRA2BGR)
+            elif input.shape[-1] == 1: 
+                input = cv2.cvtColor(input, cv2.COLOR_GRAY2BGR)
 
-            # Expand box
-            expanded_box = np.array(
-                [
-                    top_box[0] - expansion[0],  # x1
-                    top_box[1] - expansion[1],  # y1
-                    top_box[2] + expansion[0],  # x2
-                    top_box[3] + expansion[1],  # y2
-                ]
-            ).clip(0, [input.shape[1], input.shape[0]] * 2)
+            # Run inference
+            outputs = self.model_runner.lp_detector_model([input])
+            if not outputs:
+                logger.debug("No outputs from WPOD-NET model")
+                return None
 
-            logger.debug(f"Found license plate: {expanded_box.astype(int)}")
-            return tuple(expanded_box.astype(int))
-        else:
-            return None  # No detection above the threshold
+            # Handle multiple outputs
+            if len(outputs) >= 2:
+                Probs = outputs[0][0][..., 0]  # Additional indexing
+                Affines = outputs[1][0][..., 2:]
+            else:
+                # Fallback to single output parsing
+                Y = outputs[0][0]
+                Probs = Y[..., 0]
+                Affines = Y[..., 2:]
+
+            logger.debug(f"Detection probabilities shape: {Probs.shape}, range: [{Probs.min():.3f}, {Probs.max():.3f}]")
+
+            # Find high confidence detections
+            WPOD_MIN_CONFIDENCE = 0.5  # Minimum confidence for WPOD-NET detections
+            points = np.where(Probs > WPOD_MIN_CONFIDENCE)
+
+            if len(points[0]) == 0:
+                logger.debug(f"No detections above confidence threshold {WPOD_MIN_CONFIDENCE}")
+                return None
+
+            # Create list of detections
+            detections = []
+            for i in range(len(points[0])):
+                y, x = points[0][i], points[1][i]
+                affine = Affines[y, x].reshape(2, 3)
+                prob = Probs[y, x]
+
+                # Get plate points
+                pts = self._get_plate_points(affine, (x, y), (input.shape[1], input.shape[0]))
+                if pts is not None:
+                    # Calculate detection area using convex hull
+                    hull = cv2.convexHull(pts.T.astype(np.float32))
+                    area = cv2.contourArea(hull)
+
+                    # Filter by minimum area
+                    LP_MIN_AREA = 100  # Minimum area for license plate region
+                    if area >= LP_MIN_AREA:
+                        detections.append(Detection(pts, prob))
+
+            # Apply NMS to filter overlapping detections
+            if detections:
+                selected = self._nms(detections)
+                if selected:
+                    # Get highest confidence detection after NMS
+                    best_det = selected[0]
+                    pts = best_det.points
+
+                    # Convert to rectangle coordinates
+                    x1 = int(min(pts[0]))
+                    y1 = int(min(pts[1]))
+                    x2 = int(max(pts[0]))
+                    y2 = int(max(pts[1]))
+
+                    # Validate detection area ratio
+                    det_area = (x2 - x1) * (y2 - y1)
+                    image_area = h * w
+                    LP_MAX_AREA_RATIO = 0.3  # Maximum ratio of plate area to car area
+                    if det_area / image_area > LP_MAX_AREA_RATIO:
+                        logger.debug("Detection area too large relative to image")
+                        return None
+                    
+                    # Expand box by 20% to help with OCR
+                    expansion = np.array([x2 - x1, y2 - y1]) * 0.20
+                    # Expand box
+                    expanded_x1 = max(0, int(x1 - expansion[0]))
+                    expanded_y1 = max(0, int(y1 - expansion[1]))
+                    expanded_x2 = min(input.shape[1], int(x2 + expansion[0]))
+                    expanded_y2 = min(input.shape[0], int(y2 + expansion[1]))
+                    
+                    logger.debug(f"Detected license plate with confidence: {best_det.prob:.3f}, box: ({x1},{y1},{x2},{y2})")
+                    logger.debug(f"Expanded box for OCR: ({expanded_x1},{expanded_y1},{expanded_x2},{expanded_y2})")
+
+                    duration = datetime.datetime.now().timestamp() - start
+                    self.metrics.wpod_lpr_fps.value = (
+                        self.metrics.wpod_lpr_fps.value * 9 + duration
+                    ) / 10
+
+                    # Get the affine transform
+                    y, x = points[0][0], points[1][0]
+                    affine = Affines[y, x].reshape(2, 3)
+
+                    return ((expanded_x1, expanded_y1, expanded_x2, expanded_y2), affine, best_det.prob)
+
+        except Exception as e:
+            logger.error(f"Error during license plate detection: {e}")
+
+        return None
 
     def _should_keep_previous_plate(
         self, id, top_plate, top_char_confidences, top_area, avg_confidence
@@ -849,12 +964,12 @@ class LicensePlateProcessingMixin:
         # 5. Return True if we should keep the previous plate (i.e., if it scores higher)
         return prev_score > curr_score
 
-    def __update_yolov9_metrics(self, duration: float) -> None:
+    def __update_wpod_metrics(self, duration: float) -> None:
         """
         Update inference metrics.
         """
-        self.metrics.yolov9_lpr_fps.value = (
-            self.metrics.yolov9_lpr_fps.value * 9 + duration
+        self.metrics.wpod_lpr_fps.value = (
+            self.metrics.wpod_lpr_fps.value * 9 + duration
         ) / 10
 
     def __update_lpr_metrics(self, duration: float) -> None:
@@ -911,13 +1026,13 @@ class LicensePlateProcessingMixin:
                     car,
                 )
 
-            yolov9_start = datetime.datetime.now().timestamp()
+            wpod_start = datetime.datetime.now().timestamp()
             license_plate = self._detect_license_plate(car)
             logger.debug(
-                f"YOLOv9 LPD inference time: {(datetime.datetime.now().timestamp() - yolov9_start) * 1000:.2f} ms"
+                f"WPOD-NET LPD inference time: {(datetime.datetime.now().timestamp() - wpod_start) * 1000:.2f} ms"
             )
-            self.__update_yolov9_metrics(
-                datetime.datetime.now().timestamp() - yolov9_start
+            self.__update_wpod_metrics(
+                datetime.datetime.now().timestamp() - wpod_start
             )
 
             if not license_plate:
@@ -926,8 +1041,8 @@ class LicensePlateProcessingMixin:
 
             license_plate_area = max(
                 0,
-                (license_plate[2] - license_plate[0])
-                * (license_plate[3] - license_plate[1]),
+                (license_plate[0][2] - license_plate[0][0])
+                * (license_plate[0][3] - license_plate[0][1]),
             )
 
             # check that license plate is valid
@@ -937,7 +1052,7 @@ class LicensePlateProcessingMixin:
                 return
 
             license_plate_frame = car[
-                license_plate[1] : license_plate[3], license_plate[0] : license_plate[2]
+                license_plate[0][1] : license_plate[0][3], license_plate[0][0] : license_plate[0][2]
             ]
         else:
             # don't run for object without attributes
@@ -1098,6 +1213,122 @@ class LicensePlateProcessingMixin:
     def expire_object(self, object_id: str):
         if object_id in self.detected_license_plates:
             self.detected_license_plates.pop(object_id)
+
+    def _get_plate_points(self, affine: np.ndarray, center: tuple[int, int], size: tuple[int, int]) -> Optional[np.ndarray]:
+        """Convert affine transform to plate corner points.
+        Uses perspective transform for better accuracy.
+        
+        Args:
+            affine: 2x3 affine transform matrix
+            center: (x,y) center point
+            size: (width,height) of input image
+            
+        Returns:
+            4x2 array of corner points or None if invalid
+        """
+        try:
+            # Validate inputs
+            if not isinstance(affine, np.ndarray):
+                logger.error("Invalid affine matrix type")
+                return None
+
+            if affine.shape != (2,3):
+                logger.error("Invalid affine matrix shape") 
+                return None
+
+            WPOD_STRIDE = 16
+            net_stride = WPOD_STRIDE
+            side = ((208. + 40.)/2.)/net_stride  # 7.75
+            vxx = vyy = 0.5  # alpha
+
+            # Base rectangle
+            base = np.matrix([
+                [-vxx, -vyy, 1.],
+                [vxx, -vyy, 1.],
+                [vxx, vyy, 1.],
+                [-vxx, vyy, 1.]
+            ]).T
+
+            # Ensure positive scale factors and scale translation parameters
+            A = np.reshape(affine, (2,3))
+            A[0,0] = max(A[0,0], 0.)
+            A[1,1] = max(A[1,1], 0.)
+            A[:,2] *= net_stride  # Scale translation parameters
+
+            # Apply affine transform
+            pts = np.array(A * base)
+
+            # Scale and translate points
+            mn = np.array([float(center[0]) + 0.5, float(center[1]) + 0.5]) * net_stride
+            pts = pts * side + mn.reshape((2,1))
+
+            # Normalize to image size
+            w, h = size
+            pts[0] = pts[0] * w / (w//net_stride)
+            pts[1] = pts[1] * h / (h//net_stride)
+
+            # Validate output points
+            if not np.all(np.isfinite(pts)):
+                logger.error("Invalid plate points (non-finite values)")
+                return None
+
+            return pts
+
+        except Exception as e:
+            logger.error(f"Error getting plate points: {e}")
+            return None
+
+    def _batch_iou(self, box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
+        """Calculate IoU between one box and an array of boxes vectorized."""
+        # Calculate intersection
+        tl = np.maximum(box[:2], boxes[:,:2])
+        br = np.minimum(box[2:], boxes[:,2:])
+        wh = np.maximum(0., br - tl)
+        intersection = wh[:,0] * wh[:,1]
+
+        # Calculate union
+        area1 = (box[2] - box[0]) * (box[3] - box[1])
+        area2 = (boxes[:,2] - boxes[:,0]) * (boxes[:,3] - boxes[:,1])
+        union = area1 + area2 - intersection
+
+        return intersection / union
+
+    def _nms(self, detections: list[Detection], iou_threshold: float = 0.5) -> list[Detection]:
+        """Apply Non-Maximum Suppression to filter overlapping license plate detections.
+        Args:
+            detections: List of Detection objects with bounding boxes and scores
+            iou_threshold: IoU threshold for suppressing overlapping detections (0-1)
+            
+        Returns:
+            Filtered list of Detection objects after NMS
+            
+        Note:
+            Detections are sorted by confidence score in descending order before NMS
+        """
+
+        if not detections:
+            return []
+
+        # Convert to numpy arrays for vectorized operations
+        boxes = np.array([np.concatenate([d.tl(), d.br()]) for d in detections])
+        scores = np.array([d.prob for d in detections])
+
+        # Sort by confidence descending
+        indices = np.argsort(scores)[::-1]
+        boxes = boxes[indices]
+
+        keep = []
+        while len(indices) > 0:
+            keep.append(indices[0])
+            if len(indices) == 1:
+                break
+
+            # Calculate IoU with remaining boxes using vectorized operations
+            ious = self._batch_iou(boxes[0], boxes[1:])
+            indices = indices[1:][ious <= iou_threshold]
+            boxes = boxes[1:][ious <= iou_threshold]
+
+        return [detections[i] for i in keep]
 
 
 class CTCDecoder:

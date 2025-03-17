@@ -39,6 +39,7 @@ class ModelTypeEnum(str, Enum):
     yolonas = "yolonas"
     dfine = "dfine"
     yologeneric = "yolo-generic"
+    lp_detect = "lp_detect"
 
 
 class ModelConfig(BaseModel):
