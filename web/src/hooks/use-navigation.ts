@@ -32,7 +32,7 @@ export default function useNavigation(
           id: ID_LIVE,
           variant,
           icon: FaVideo,
-          title: "menu.live",
+          title: "menu.live.title",
           url: "/",
         },
         {
