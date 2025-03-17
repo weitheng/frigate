@@ -868,14 +868,14 @@ class LicensePlateProcessingMixin:
 
         id = obj_data["id"]
 
-        # don't run for non car objects
-        if obj_data.get("label") != "car":
-            logger.debug("Not a processing license plate for non car object.")
+        # don't run for non vehicle objects
+        if obj_data.get("label") not in ["car", "truck", "bus", "motorcycle"]:
+            logger.debug("Not a processing license plate for non vehicle object.")
             return
 
-        # don't run for stationary car objects
+        # don't run for stationary vehicle objects
         if obj_data.get("stationary") == True:
-            logger.debug("Not a processing license plate for a stationary car object.")
+            logger.debug("Not a processing license plate for a stationary vehicle object.")
             return
 
         # don't overwrite sub label for objects that have a sub label
