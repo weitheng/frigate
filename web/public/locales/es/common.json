@@ -139,7 +139,9 @@
       "cs": "Čeština (Checo)",
       "nl": "Nederlands (Neerlandés)",
       "fr": "Français (Frances)",
-      "yue": "粵語 (Cantonés)"
+      "yue": "粵語 (Cantonés)",
+      "th": "ไทย (Tailandés)",
+      "ca": "Català (Catalan)"
     },
     "appearance": "Apariencia",
     "darkMode": {
@@ -185,6 +187,10 @@
     "speed": {
       "mph": "mph",
       "kph": "kph"
+    },
+    "length": {
+      "meters": "Metros",
+      "feet": "Pies"
     }
   },
   "button": {

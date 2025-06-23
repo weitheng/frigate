@@ -171,6 +171,8 @@ class LicensePlateProcessingMixin:
             outputs = self.model_runner.recognition_model(norm_images)
         except Exception as e:
             logger.warning(f"Error running LPR recognition model: {e}")
+            return [], []
+
         return self.ctc_decoder(outputs)
 
     def _process_license_plate(
@@ -1502,18 +1504,24 @@ class LicensePlateProcessingMixin:
 
         # Determine subLabel based on known plates, use regex matching
         # Default to the detected plate, use label name if there's a match
-        sub_label = next(
-            (
-                label
-                for label, plates in self.lpr_config.known_plates.items()
-                if any(
-                    re.match(f"^{plate}$", top_plate)
-                    or distance(plate, top_plate) <= self.lpr_config.match_distance
-                    for plate in plates
-                )
-            ),
-            None,
-        )
+        try:
+            sub_label = next(
+                (
+                    label
+                    for label, plates in self.lpr_config.known_plates.items()
+                    if any(
+                        re.match(f"^{plate}$", top_plate)
+                        or distance(plate, top_plate) <= self.lpr_config.match_distance
+                        for plate in plates
+                    )
+                ),
+                None,
+            )
+        except re.error:
+            logger.error(
+                f"{camera}: Invalid regex in known plates configuration: {self.lpr_config.known_plates}"
+            )
+            sub_label = None
 
         # If it's a known plate, publish to sub_label
         if sub_label is not None:
@@ -1580,19 +1588,6 @@ class LicensePlateProcessingMixin:
 
             if object_id in self.camera_current_cars.get(camera, []):
                 self.camera_current_cars[camera].remove(object_id)
-
-                if len(self.camera_current_cars[camera]) == 0:
-                    self.requestor.send_data(
-                        "tracked_object_update",
-                        json.dumps(
-                            {
-                                "type": TrackedObjectUpdateTypesEnum.lpr,
-                                "name": None,
-                                "plate": None,
-                                "camera": camera,
-                            }
-                        ),
-                    )
 
 
 class CTCDecoder:

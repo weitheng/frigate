@@ -72,12 +72,12 @@
       "24hour": "MM-dd-yy-HH-mm-ss"
     },
     "formattedTimestamp2": {
-      "12hour": "MM/dd h:mm:ssa",
+      "12hour": "dd.MM h:mm:ssa",
       "24hour": "d MMM HH:mm:ss"
     },
     "formattedTimestampMonthDayYear": {
-      "24hour": "МММ д, рррр",
-      "12hour": "МММ д, рррр"
+      "24hour": "MMM d, yyyy",
+      "12hour": "MMM d, yyyy"
     }
   },
   "button": {
@@ -150,7 +150,9 @@
         "label": "Використовувати системну мову"
       },
       "en": "Англійська",
-      "yue": "粵語 (Кантонська)"
+      "yue": "粵語 (Кантонська)",
+      "th": "ไทย (Тайська)",
+      "ca": "Català (Каталанська)"
     },
     "system": "Система",
     "systemMetrics": "Системна метріка",
@@ -213,6 +215,10 @@
     "speed": {
       "mph": "миль/г",
       "kph": "км/г"
+    },
+    "length": {
+      "feet": "ноги",
+      "meters": "метрів"
     }
   },
   "label": {

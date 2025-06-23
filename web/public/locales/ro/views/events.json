@@ -30,6 +30,9 @@
     "label": "Vezi articole noi de revizuit",
     "button": "Articole Noi de Revizuit"
   },
-  "camera": "Camera",
-  "detections": "Detectii"
+  "camera": "Camera foto",
+  "detections": "Detectii",
+  "detected": "detectat",
+  "selected_one": "{{count}} selectate",
+  "selected_other": "{{count}} selectate"
 }

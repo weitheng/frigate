@@ -188,7 +188,9 @@
       "sk": "Slovenčina (Slovensk)",
       "pl": "Polski (Polsk)",
       "uk": "Українська (Ukrainsk)",
-      "yue": "粵語 (Kantonesisk)"
+      "yue": "粵語 (Kantonesisk)",
+      "th": "ไทย (Thai)",
+      "ca": "Català (Katalansk)"
     },
     "appearance": "Utseende",
     "darkMode": {
@@ -227,6 +229,10 @@
     "speed": {
       "mph": "mph",
       "kph": "km/t"
+    },
+    "length": {
+      "meters": "meter",
+      "feet": "fot"
     }
   },
   "label": {

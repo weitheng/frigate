@@ -57,6 +57,7 @@ export default function CameraSettingsView({
   setUnsavedChanges,
 }: CameraSettingsViewProps) {
   const { t } = useTranslation(["views/settings"]);
+  const { getLocaleDocUrl } = useDocDomain();
 
   const { data: config, mutate: updateConfig } =
     useSWR<FrigateConfig>("config");
