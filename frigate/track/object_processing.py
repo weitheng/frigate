@@ -11,7 +11,7 @@ from typing import Any
 
 import cv2
 import numpy as np
-from peewee import DoesNotExist, SQL
+from peewee import SQL, DoesNotExist
 
 from frigate.camera.state import CameraState
 from frigate.comms.detections_updater import DetectionPublisher, DetectionTypeEnum
