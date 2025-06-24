@@ -11,7 +11,7 @@ from typing import Any
 
 import cv2
 import numpy as np
-from peewee import SQL, DoesNotExist
+from peewee import DoesNotExist, SQL
 
 from frigate.camera.state import CameraState
 from frigate.comms.detections_updater import DetectionPublisher, DetectionTypeEnum
@@ -28,18 +28,15 @@ from frigate.config import (
     RecordConfig,
     SnapshotsConfig,
 )
-
 from frigate.config.camera.updater import (
     CameraConfigUpdateEnum,
     CameraConfigUpdateSubscriber,
 )
-
 from frigate.const import (
     FAST_QUEUE_TIMEOUT,
     UPDATE_CAMERA_ACTIVITY,
     UPSERT_REVIEW_SEGMENT,
 )
-
 from frigate.events.types import EventStateEnum, EventTypeEnum
 from frigate.models import Event, ReviewSegment, Timeline
 from frigate.track.tracked_object import TrackedObject
