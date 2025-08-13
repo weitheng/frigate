@@ -143,6 +143,9 @@ class EmbeddingMaintainer(threading.Thread):
                 # Disable semantic search in runtime to prevent further attempts
                 config.semantic_search.enabled = False
 
+            # Sync semantic search triggers in db with config
+            self.embeddings.sync_triggers()
+
         # create communication for updating event descriptions
         self.requestor = InterProcessRequestor()
 
