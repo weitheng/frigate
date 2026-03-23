@@ -13,6 +13,9 @@ variable "TRT_BASE" {
 variable "COMPUTE_LEVEL" {
   default = ""
 }
+variable "TRT_REQUIREMENTS" {
+  default = "requirements-amd64.txt"
+}
 variable "BASE_HOOK" {
   # Ensure an up-to-date python 3.11 is available in jetson images
   default = <<EOT
@@ -35,6 +38,7 @@ target "_build_args" {
     SLIM_BASE = SLIM_BASE,
     TRT_BASE = TRT_BASE,
     COMPUTE_LEVEL = COMPUTE_LEVEL,
+    TRT_REQUIREMENTS = TRT_REQUIREMENTS,
     BASE_HOOK = BASE_HOOK
   }
   platforms = ["linux/${ARCH}"]

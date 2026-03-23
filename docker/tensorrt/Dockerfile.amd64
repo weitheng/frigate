@@ -8,9 +8,10 @@ ARG PIP_BREAK_SYSTEM_PACKAGES=1
 
 FROM wheels AS trt-wheels
 ARG PIP_BREAK_SYSTEM_PACKAGES
+ARG TRT_REQUIREMENTS=requirements-amd64.txt
 
 # Install TensorRT wheels
-COPY docker/tensorrt/requirements-amd64.txt /requirements-tensorrt.txt
+COPY docker/tensorrt/${TRT_REQUIREMENTS} /requirements-tensorrt.txt
 COPY docker/main/requirements-wheels.txt /requirements-wheels.txt
 
 # remove dependencies from the requirements that have type constraints
