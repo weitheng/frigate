@@ -7,8 +7,14 @@ import ActivityIndicator from "@/components/indicators/activity-indicator";
 import { TrackingDetailsSequence } from "@/types/timeline";
 import { FrigateConfig } from "@/types/frigateConfig";
 import { formatUnixTimestampToDateTime } from "@/utils/dateUtil";
+import { use24HourTime } from "@/hooks/use-date-utils";
 import { getIconForLabel } from "@/utils/iconUtil";
-import { LuCircle, LuFolderX } from "react-icons/lu";
+import {
+  LuChevronDown,
+  LuChevronRight,
+  LuCircle,
+  LuFolderX,
+} from "react-icons/lu";
 import { cn } from "@/lib/utils";
 import HlsVideoPlayer from "@/components/player/HlsVideoPlayer";
 import { baseUrl } from "@/api/baseUrl";
@@ -428,17 +434,18 @@ export function TrackingDetails({
     [annotationOffset, displaySource, timestampToVideoTime],
   );
 
+  const is24Hour = use24HourTime(config);
+
   const formattedStart = config
     ? formatUnixTimestampToDateTime(event.start_time ?? 0, {
         timezone: config.ui.timezone,
-        date_format:
-          config.ui.time_format == "24hour"
-            ? t("time.formattedTimestamp.24hour", {
-                ns: "common",
-              })
-            : t("time.formattedTimestamp.12hour", {
-                ns: "common",
-              }),
+        date_format: is24Hour
+          ? t("time.formattedTimestamp.24hour", {
+              ns: "common",
+            })
+          : t("time.formattedTimestamp.12hour", {
+              ns: "common",
+            }),
         time_style: "medium",
         date_style: "medium",
       })
@@ -448,14 +455,13 @@ export function TrackingDetails({
     config && event.end_time != null
       ? formatUnixTimestampToDateTime(event.end_time, {
           timezone: config.ui.timezone,
-          date_format:
-            config.ui.time_format == "24hour"
-              ? t("time.formattedTimestamp.24hour", {
-                  ns: "common",
-                })
-              : t("time.formattedTimestamp.12hour", {
-                  ns: "common",
-                }),
+          date_format: is24Hour
+            ? t("time.formattedTimestamp.24hour", {
+                ns: "common",
+              })
+            : t("time.formattedTimestamp.12hour", {
+                ns: "common",
+              }),
           time_style: "medium",
           date_style: "medium",
         })
@@ -898,6 +904,7 @@ function LifecycleIconRow({
   const { t } = useTranslation(["views/explore", "components/player"]);
   const { data: config } = useSWR<FrigateConfig>("config");
   const [isOpen, setIsOpen] = useState(false);
+  const [showAdvancedScores, setShowAdvancedScores] = useState(false);
   const navigate = useNavigate();
   const isAdmin = useIsAdmin();
 
@@ -917,24 +924,25 @@ function LifecycleIconRow({
     [effectiveTime, item.timestamp],
   );
 
+  const is24Hour = use24HourTime(config);
+
   const formattedEventTimestamp = useMemo(
     () =>
       config
         ? formatUnixTimestampToDateTime(item.timestamp ?? 0, {
             timezone: config.ui.timezone,
-            date_format:
-              config.ui.time_format == "24hour"
-                ? t("time.formattedTimestampHourMinuteSecond.24hour", {
-                    ns: "common",
-                  })
-                : t("time.formattedTimestampHourMinuteSecond.12hour", {
-                    ns: "common",
-                  }),
+            date_format: is24Hour
+              ? t("time.formattedTimestampHourMinuteSecond.24hour", {
+                  ns: "common",
+                })
+              : t("time.formattedTimestampHourMinuteSecond.12hour", {
+                  ns: "common",
+                }),
             time_style: "medium",
             date_style: "medium",
           })
         : "",
-    [config, item.timestamp, t],
+    [config, is24Hour, item.timestamp, t],
   );
 
   const ratio = useMemo(
@@ -991,12 +999,31 @@ function LifecycleIconRow({
     [item.data.box],
   );
 
-  const score = useMemo(() => {
-    if (item.data.score !== undefined) {
-      return (item.data.score * 100).toFixed(0) + "%";
-    }
-    return "N/A";
-  }, [item.data.score]);
+  const currentScore = useMemo(
+    () =>
+      item.data.score !== undefined
+        ? (item.data.score * 100).toFixed(0) + "%"
+        : null,
+    [item.data.score],
+  );
+  const computedScore = useMemo(
+    () =>
+      item.data.computed_score !== undefined &&
+      item.data.computed_score !== null &&
+      item.data.computed_score > 0
+        ? (item.data.computed_score * 100).toFixed(0) + "%"
+        : null,
+    [item.data.computed_score],
+  );
+  const topScore = useMemo(
+    () =>
+      item.data.top_score !== undefined &&
+      item.data.top_score !== null &&
+      item.data.top_score > 0
+        ? (item.data.top_score * 100).toFixed(0) + "%"
+        : null,
+    [item.data.top_score],
+  );
 
   return (
     <div
@@ -1032,8 +1059,50 @@ function LifecycleIconRow({
                   <span className="text-primary-variant">
                     {t("trackingDetails.lifecycleItemDesc.header.score")}
                   </span>
-                  <span className="font-medium text-primary">{score}</span>
+                  <span className="font-medium text-primary">
+                    {currentScore ?? "N/A"}
+                  </span>
+                  {(computedScore || topScore) && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowAdvancedScores((v) => !v);
+                      }}
+                      className="ml-1 inline-flex items-center text-primary-variant hover:text-primary"
+                      aria-expanded={showAdvancedScores}
+                      aria-label={t(
+                        "trackingDetails.lifecycleItemDesc.header.toggleAdvancedScores",
+                      )}
+                    >
+                      {showAdvancedScores ? (
+                        <LuChevronDown className="size-3.5" />
+                      ) : (
+                        <LuChevronRight className="size-3.5" />
+                      )}
+                    </button>
+                  )}
                 </div>
+                {showAdvancedScores && computedScore && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-primary-variant">
+                      {t(
+                        "trackingDetails.lifecycleItemDesc.header.computedScore",
+                      )}
+                    </span>
+                    <span className="font-medium text-primary">
+                      {computedScore}
+                    </span>
+                  </div>
+                )}
+                {showAdvancedScores && topScore && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-primary-variant">
+                      {t("trackingDetails.lifecycleItemDesc.header.topScore")}
+                    </span>
+                    <span className="font-medium text-primary">{topScore}</span>
+                  </div>
+                )}
                 <div className="flex items-center gap-1.5">
                   <span className="text-primary-variant">
                     {t("trackingDetails.lifecycleItemDesc.header.ratio")}

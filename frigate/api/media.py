@@ -896,6 +896,7 @@ async def event_thumbnail(
                 if event_id in camera_state.tracked_objects:
                     tracked_obj = camera_state.tracked_objects.get(event_id)
                     if tracked_obj is not None:
+                        await require_camera_access(camera_state.name, request=request)
                         thumbnail_bytes = tracked_obj.get_thumbnail(extension.value)
         except Exception:
             return JSONResponse(
@@ -1066,7 +1067,7 @@ def grid_snapshot(
 
 
 @router.delete(
-    "/{camera_name}/region_grid", dependencies=[Depends(require_role("admin"))]
+    "/{camera_name}/region_grid", dependencies=[Depends(require_role(["admin"]))]
 )
 def clear_region_grid(request: Request, camera_name: str):
     """Clear the region grid for a camera."""
@@ -1228,6 +1229,33 @@ async def event_clip(
 
 
 @router.get(
+    "/review/{review_id}/clip.mp4",
+)
+async def review_clip(
+    request: Request,
+    review_id: str,
+    padding: int = Query(0, description="Padding to apply to clip."),
+):
+    try:
+        review: ReviewSegment = ReviewSegment.get(ReviewSegment.id == review_id)
+    except DoesNotExist:
+        return JSONResponse(
+            content={"success": False, "message": "Review not found"}, status_code=404
+        )
+
+    await require_camera_access(review.camera, request=request)
+
+    end_ts = (
+        datetime.now().timestamp()
+        if review.end_time is None
+        else review.end_time + padding
+    )
+    return await recording_clip(
+        request, review.camera, review.start_time - padding, end_ts
+    )
+
+
+@router.get(
     "/events/{event_id}/preview.gif",
 )
 async def event_preview(request: Request, event_id: str):
@@ -1337,9 +1365,9 @@ def preview_gif(
                 status_code=404,
             )
 
-        file_start = f"preview_{camera_name}"
-        start_file = f"{file_start}-{start_ts}.{PREVIEW_FRAME_TYPE}"
-        end_file = f"{file_start}-{end_ts}.{PREVIEW_FRAME_TYPE}"
+        file_start = f"preview_{camera_name}-"
+        start_file = f"{file_start}{start_ts}.{PREVIEW_FRAME_TYPE}"
+        end_file = f"{file_start}{end_ts}.{PREVIEW_FRAME_TYPE}"
         selected_previews = []
 
         for file in sorted(os.listdir(preview_dir)):
@@ -1519,9 +1547,9 @@ def preview_mp4(
                 status_code=404,
             )
 
-        file_start = f"preview_{camera_name}"
-        start_file = f"{file_start}-{start_ts}.{PREVIEW_FRAME_TYPE}"
-        end_file = f"{file_start}-{end_ts}.{PREVIEW_FRAME_TYPE}"
+        file_start = f"preview_{camera_name}-"
+        start_file = f"{file_start}{start_ts}.{PREVIEW_FRAME_TYPE}"
+        end_file = f"{file_start}{end_ts}.{PREVIEW_FRAME_TYPE}"
         selected_previews = []
 
         for file in sorted(os.listdir(preview_dir)):

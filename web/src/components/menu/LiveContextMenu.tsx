@@ -46,6 +46,7 @@ import {
 } from "@/api/ws";
 import { useTranslation } from "react-i18next";
 import { useDateLocale } from "@/hooks/use-date-locale";
+import { use24HourTime } from "@/hooks/use-date-utils";
 import { useIsAdmin } from "@/hooks/use-is-admin";
 import { CameraNameLabel } from "../camera/FriendlyNameLabel";
 import { LiveStreamMetadata } from "@/types/live";
@@ -247,6 +248,8 @@ export default function LiveContextMenu({
 
   const locale = useDateLocale();
 
+  const is24Hour = use24HourTime(config);
+
   const formatSuspendedUntil = (timestamp: string) => {
     // Some languages require a change in word order
     if (timestamp === "0") return t("time.untilForRestart", { ns: "common" });
@@ -255,14 +258,13 @@ export default function LiveContextMenu({
       time_style: "medium",
       date_style: "medium",
       timezone: config?.ui.timezone,
-      date_format:
-        config?.ui.time_format == "24hour"
-          ? t("time.formattedTimestampMonthDayHourMinute.24hour", {
-              ns: "common",
-            })
-          : t("time.formattedTimestampMonthDayHourMinute.12hour", {
-              ns: "common",
-            }),
+      date_format: is24Hour
+        ? t("time.formattedTimestampMonthDayHourMinute.24hour", {
+            ns: "common",
+          })
+        : t("time.formattedTimestampMonthDayHourMinute.12hour", {
+            ns: "common",
+          }),
       locale: locale,
     });
     return t("time.untilForTime", { ns: "common", time });
@@ -270,7 +272,7 @@ export default function LiveContextMenu({
 
   return (
     <div className={cn("w-full", className)}>
-      <ContextMenu key={camera} onOpenChange={handleOpenChange}>
+      <ContextMenu key={camera} modal={false} onOpenChange={handleOpenChange}>
         <ContextMenuTrigger>{children}</ContextMenuTrigger>
         <ContextMenuContent>
           <div className="flex flex-col items-start gap-1 py-1 pl-2">

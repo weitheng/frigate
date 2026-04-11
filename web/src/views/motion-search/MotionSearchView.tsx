@@ -51,7 +51,7 @@ import {
   RecordingSegment,
 } from "@/types/record";
 import { VideoResolutionType } from "@/types/live";
-import { useFormattedTimestamp } from "@/hooks/use-date-utils";
+import { useFormattedTimestamp, use24HourTime } from "@/hooks/use-date-utils";
 import MotionSearchROICanvas from "./MotionSearchROICanvas";
 import MotionSearchDialog from "./MotionSearchDialog";
 import { IoMdArrowRoundBack } from "react-icons/io";
@@ -94,12 +94,13 @@ export default function MotionSearchView({
   ]);
   const navigate = useNavigate();
 
+  const is24Hour = use24HourTime(config);
   const resultTimestampFormat = useMemo(
     () =>
-      config.ui?.time_format === "24hour"
+      is24Hour
         ? t("time.formattedTimestamp.24hour", { ns: "common" })
         : t("time.formattedTimestamp.12hour", { ns: "common" }),
-    [config.ui?.time_format, t],
+    [is24Hour, t],
   );
 
   // Refs
@@ -993,15 +994,20 @@ export default function MotionSearchView({
   );
 
   const progressMetrics = jobStatus?.metrics ?? searchMetrics;
-  const progressValue =
-    progressMetrics && progressMetrics.segments_scanned > 0
-      ? Math.min(
-          100,
-          (progressMetrics.segments_processed /
-            progressMetrics.segments_scanned) *
-            100,
-        )
-      : 0;
+  const progressValue = (() => {
+    if (!progressMetrics || progressMetrics.segments_scanned <= 0) {
+      return 0;
+    }
+    const skipped =
+      progressMetrics.heatmap_roi_skip_segments +
+      progressMetrics.metadata_inactive_segments;
+    const totalWork = progressMetrics.segments_scanned - skipped;
+    const doneWork = progressMetrics.segments_processed - skipped;
+    if (totalWork <= 0) {
+      return 100;
+    }
+    return Math.min(100, Math.max(0, (doneWork / totalWork) * 100));
+  })();
 
   const resultsPanel = (
     <>
@@ -1035,8 +1041,8 @@ export default function MotionSearchView({
             <Progress className="h-1" value={progressValue} />
           </div>
         )}
-        {searchMetrics && searchResults.length > 0 && (
-          <div className="mx-2 rounded-lg border bg-secondary p-2">
+        {searchMetrics && (isSearching || searchResults.length > 0) && (
+          <div className="mx-2 my-3 rounded-lg border bg-secondary p-2">
             <div className="space-y-0.5 text-xs text-muted-foreground">
               <div className="flex justify-between">
                 <span>{t("metrics.segmentsScanned")}</span>

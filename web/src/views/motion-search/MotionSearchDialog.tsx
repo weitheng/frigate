@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { isDesktop, isIOS, isMobile } from "react-device-detect";
 import { FaArrowRight, FaCalendarAlt, FaCheckCircle } from "react-icons/fa";
@@ -42,9 +42,9 @@ import { CameraNameLabel } from "@/components/camera/FriendlyNameLabel";
 import { TimezoneAwareCalendar } from "@/components/overlay/ReviewActivityCalendar";
 
 import { useApiHost } from "@/api";
-import { useResizeObserver } from "@/hooks/resize-observer";
-import { useFormattedTimestamp } from "@/hooks/use-date-utils";
+import { useFormattedTimestamp, use24HourTime } from "@/hooks/use-date-utils";
 import { getUTCOffset } from "@/utils/dateUtil";
+import useSWR from "swr";
 import { cn } from "@/lib/utils";
 import MotionSearchROICanvas from "./MotionSearchROICanvas";
 import { TransformComponent, TransformWrapper } from "react-zoom-pan-pinch";
@@ -112,10 +112,34 @@ export default function MotionSearchDialog({
 }: MotionSearchDialogProps) {
   const { t } = useTranslation(["views/motionSearch", "common"]);
   const apiHost = useApiHost();
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [{ width: containerWidth, height: containerHeight }] =
-    useResizeObserver(containerRef);
+  const [containerNode, setContainerNode] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  const containerWidth = containerSize.width;
+  const containerHeight = containerSize.height;
   const [imageLoaded, setImageLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!containerNode) {
+      return;
+    }
+
+    const measure = () => {
+      const rect = containerNode.getBoundingClientRect();
+      setContainerSize((prev) =>
+        prev.width === rect.width && prev.height === rect.height
+          ? prev
+          : { width: rect.width, height: rect.height },
+      );
+    };
+
+    measure();
+
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(containerNode);
+    return () => observer.disconnect();
+  }, [containerNode]);
 
   const cameraConfig = useMemo(() => {
     if (!selectedCamera) return undefined;
@@ -257,16 +281,16 @@ export default function MotionSearchDialog({
                     }}
                   >
                     <div
-                      ref={containerRef}
+                      ref={setContainerNode}
                       className="relative flex w-full items-center justify-center overflow-hidden rounded-lg border bg-secondary"
                       style={{ aspectRatio: "16 / 9" }}
                     >
-                      {selectedCamera && cameraConfig && imageSize.width > 0 ? (
+                      {selectedCamera && cameraConfig ? (
                         <div
                           className="relative"
                           style={{
-                            width: imageSize.width,
-                            height: imageSize.height,
+                            width: imageSize.width || "100%",
+                            height: imageSize.height || "100%",
                           }}
                         >
                           <img
@@ -276,6 +300,11 @@ export default function MotionSearchDialog({
                             src={`${apiHost}api/${selectedCamera}/latest.jpg?h=500`}
                             className="h-full w-full object-contain"
                             onLoad={() => setImageLoaded(true)}
+                            ref={(node) => {
+                              if (node?.complete && node.naturalWidth > 0) {
+                                setImageLoaded(true);
+                              }
+                            }}
                           />
                           {!imageLoaded && (
                             <div className="absolute inset-0 flex items-center justify-center">
@@ -452,7 +481,6 @@ export default function MotionSearchDialog({
                 range={searchRange}
                 setRange={setSearchRange}
                 defaultRange={defaultRange}
-                timeFormat={config.ui?.time_format}
                 timezone={timezone}
               />
 
@@ -476,7 +504,6 @@ type SearchRangeSelectorProps = {
   range?: TimeRange;
   setRange: React.Dispatch<React.SetStateAction<TimeRange | undefined>>;
   defaultRange: TimeRange;
-  timeFormat?: "browser" | "12hour" | "24hour";
   timezone?: string;
 };
 
@@ -484,7 +511,6 @@ function SearchRangeSelector({
   range,
   setRange,
   defaultRange,
-  timeFormat,
   timezone,
 }: SearchRangeSelectorProps) {
   const { t } = useTranslation(["views/motionSearch", "common"]);
@@ -527,15 +553,18 @@ function SearchRangeSelector({
     return time;
   }, [range, defaultRange, timezoneOffset, localTimeOffset]);
 
+  const { data: config } = useSWR<FrigateConfig>("config");
+  const is24Hour = use24HourTime(config);
+
   const formattedStart = useFormattedTimestamp(
     startTime,
-    timeFormat === "24hour"
+    is24Hour
       ? t("time.formattedTimestamp.24hour", { ns: "common" })
       : t("time.formattedTimestamp.12hour", { ns: "common" }),
   );
   const formattedEnd = useFormattedTimestamp(
     endTime,
-    timeFormat === "24hour"
+    is24Hour
       ? t("time.formattedTimestamp.24hour", { ns: "common" })
       : t("time.formattedTimestamp.12hour", { ns: "common" }),
   );

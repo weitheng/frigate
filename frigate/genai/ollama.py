@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from httpx import RemoteProtocolError, TimeoutException
 from ollama import AsyncClient as OllamaAsyncClient
@@ -28,10 +28,10 @@ class OllamaClient(GenAIClient):
         },
     }
 
-    provider: ApiClient
+    provider: ApiClient | None
     provider_options: dict[str, Any]
 
-    def _init_provider(self):
+    def _init_provider(self) -> ApiClient | None:
         """Initialize the client."""
         self.provider_options = {
             **self.LOCAL_OPTIMIZED_OPTIONS,
@@ -54,12 +54,16 @@ class OllamaClient(GenAIClient):
             return None
 
     @staticmethod
-    def _clean_schema_for_ollama(schema: dict) -> dict:
+    def _clean_schema_for_ollama(schema: dict, *, _is_properties: bool = False) -> dict:
         """Strip Pydantic metadata from a JSON schema for Ollama compatibility.
 
         Ollama's grammar-based constrained generation works best with minimal
         schemas. Pydantic adds title/description/constraint fields that can
         cause the grammar generator to silently skip required fields.
+
+        Keys inside a ``properties`` dict are actual field names and must never
+        be stripped, even if they collide with a metadata key name (e.g. a
+        model field called ``title``).
         """
         STRIP_KEYS = {
             "title",
@@ -69,12 +73,14 @@ class OllamaClient(GenAIClient):
             "exclusiveMinimum",
             "exclusiveMaximum",
         }
-        result = {}
+        result: dict[str, Any] = {}
         for key, value in schema.items():
-            if key in STRIP_KEYS:
+            if not _is_properties and key in STRIP_KEYS:
                 continue
             if isinstance(value, dict):
-                result[key] = OllamaClient._clean_schema_for_ollama(value)
+                result[key] = OllamaClient._clean_schema_for_ollama(
+                    value, _is_properties=(key == "properties")
+                )
             elif isinstance(value, list):
                 result[key] = [
                     OllamaClient._clean_schema_for_ollama(item)
@@ -116,7 +122,7 @@ class OllamaClient(GenAIClient):
             logger.debug(
                 f"Ollama tokens used: eval_count={result.get('eval_count')}, prompt_eval_count={result.get('prompt_eval_count')}"
             )
-            return result["response"].strip()
+            return str(result["response"]).strip()
         except (
             TimeoutException,
             ResponseError,
@@ -125,6 +131,29 @@ class OllamaClient(GenAIClient):
         ) as e:
             logger.warning("Ollama returned an error: %s", str(e))
             return None
+
+    def list_models(self) -> list[str]:
+        """Return available model names from the Ollama server."""
+        client = self.provider
+        if client is None:
+            # Provider init may have failed due to invalid model, but we can
+            # still list available models with a fresh client.
+            if not self.genai_config.base_url:
+                return []
+            try:
+                client = ApiClient(
+                    host=self.genai_config.base_url, timeout=self.timeout
+                )
+            except Exception:
+                return []
+        try:
+            response = client.list()
+            return sorted(
+                m.get("name", m.get("model", "")) for m in response.get("models", [])
+            )
+        except Exception as e:
+            logger.warning("Failed to list Ollama models: %s", e)
+            return []
 
     def get_context_size(self) -> int:
         """Get the context window size for Ollama."""
@@ -257,7 +286,7 @@ class OllamaClient(GenAIClient):
         messages: list[dict[str, Any]],
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[str] = "auto",
-    ):
+    ) -> AsyncGenerator[tuple[str, Any], None]:
         """Stream chat with tools; yields content deltas then final message.
 
         When tools are provided, Ollama streaming does not include tool_calls

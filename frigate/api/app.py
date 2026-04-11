@@ -5,6 +5,7 @@ import copy
 import json
 import logging
 import os
+import platform
 import traceback
 import urllib
 from datetime import datetime, timedelta
@@ -124,6 +125,16 @@ def metrics(request: Request):
     return Response(content=content, media_type=content_type)
 
 
+@router.get(
+    "/genai/models",
+    dependencies=[Depends(allow_any_authenticated())],
+    summary="List available GenAI models",
+    description="Returns available models for each configured GenAI provider.",
+)
+def genai_models(request: Request):
+    return JSONResponse(content=request.app.genai_manager.list_models())
+
+
 @router.get("/config", dependencies=[Depends(allow_any_authenticated())])
 def config(request: Request):
     config_obj: FrigateConfig = request.app.frigate_config
@@ -141,8 +152,19 @@ def config(request: Request):
     # remove the proxy secret
     config["proxy"].pop("auth_secret", None)
 
+    # remove genai api keys
+    for genai_name, genai_cfg in config.get("genai", {}).items():
+        if isinstance(genai_cfg, dict):
+            genai_cfg.pop("api_key", None)
+
     for camera_name, camera in request.app.frigate_config.cameras.items():
         camera_dict = config["cameras"][camera_name]
+
+        # remove onvif credentials
+        onvif_dict = camera_dict.get("onvif", {})
+        if onvif_dict:
+            onvif_dict.pop("user", None)
+            onvif_dict.pop("password", None)
 
         # clean paths
         for input in camera_dict.get("ffmpeg", {}).get("inputs", []):
@@ -246,19 +268,26 @@ def get_active_profile(request: Request):
 @router.get("/ffmpeg/presets", dependencies=[Depends(allow_any_authenticated())])
 def ffmpeg_presets():
     """Return available ffmpeg preset keys for config UI usage."""
+    machine = platform.machine().lower()
+    is_arm64 = machine in ("aarch64", "arm64", "armv8", "armv7l")
 
-    # Whitelist based on documented presets in ffmpeg_presets.md
-    hwaccel_presets = [
-        "preset-rpi-64-h264",
-        "preset-rpi-64-h265",
-        "preset-vaapi",
-        "preset-intel-qsv-h264",
-        "preset-intel-qsv-h265",
-        "preset-nvidia",
-        "preset-jetson-h264",
-        "preset-jetson-h265",
-        "preset-rkmpp",
-    ]
+    if is_arm64:
+        hwaccel_presets = [
+            "preset-rpi-64-h264",
+            "preset-rpi-64-h265",
+            "preset-jetson-h264",
+            "preset-jetson-h265",
+            "preset-rkmpp",
+            "preset-vaapi",
+        ]
+    else:
+        hwaccel_presets = [
+            "preset-vaapi",
+            "preset-intel-qsv-h264",
+            "preset-intel-qsv-h265",
+            "preset-nvidia",
+        ]
+
     input_presets = [
         "preset-http-jpeg-generic",
         "preset-http-mjpeg-generic",
@@ -605,6 +634,34 @@ def config_set(request: Request, body: AppConfigSetBody):
 
                 try:
                     config = FrigateConfig.parse(new_raw_config)
+                except ValidationError as e:
+                    with open(config_file, "w") as f:
+                        f.write(old_raw_config)
+                        f.close()
+                    logger.error(
+                        f"Config Validation Error:\n\n{str(traceback.format_exc())}"
+                    )
+                    error_messages = []
+                    for err in e.errors():
+                        msg = err.get("msg", "")
+                        # Strip pydantic "Value error, " prefix for cleaner display
+                        if msg.startswith("Value error, "):
+                            msg = msg[len("Value error, ") :]
+                        error_messages.append(msg)
+                    message = (
+                        "; ".join(error_messages)
+                        if error_messages
+                        else "Check logs for error message."
+                    )
+                    return JSONResponse(
+                        content=(
+                            {
+                                "success": False,
+                                "message": f"Error saving config: {message}",
+                            }
+                        ),
+                        status_code=400,
+                    )
                 except Exception:
                     with open(config_file, "w") as f:
                         f.write(old_raw_config)
@@ -636,6 +693,9 @@ def config_set(request: Request, body: AppConfigSetBody):
 
                 if request.app.stats_emitter is not None:
                     request.app.stats_emitter.config = config
+
+                if request.app.dispatcher is not None:
+                    request.app.dispatcher.config = config
 
                 if body.update_topic:
                     if body.update_topic.startswith("config/cameras/"):
@@ -864,7 +924,10 @@ def sync_media(body: MediaSyncBody = Body(...)):
         202 Accepted with job_id, or 409 Conflict if job already running.
     """
     job_id = start_media_sync_job(
-        dry_run=body.dry_run, media_types=body.media_types, force=body.force
+        dry_run=body.dry_run,
+        media_types=body.media_types,
+        force=body.force,
+        verbose=body.verbose,
     )
 
     if job_id is None:

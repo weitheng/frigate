@@ -5,7 +5,7 @@ import importlib
 import logging
 import os
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
 from playhouse.shortcuts import model_to_dict
@@ -31,10 +31,10 @@ __all__ = [
 PROVIDERS = {}
 
 
-def register_genai_provider(key: GenAIProviderEnum):
+def register_genai_provider(key: GenAIProviderEnum) -> Callable:
     """Register a GenAI provider."""
 
-    def decorator(cls):
+    def decorator(cls: type) -> type:
         PROVIDERS[key] = cls
         return cls
 
@@ -106,8 +106,8 @@ When forming your description:
 ## Response Field Guidelines
 
 Respond with a JSON object matching the provided schema. Field-specific guidance:
-- `scene`: Describe how the sequence begins, then the progression of events — all significant movements and actions in order. For example, if a vehicle arrives and then a person exits, describe both sequentially. Always use subject names from "Objects in Scene" — do not replace named subjects with generic terms like "a person" or "the individual". Your description should align with and support the threat level you assign.
-- `title`: Characterize **what took place and where** — interpret the overall purpose or outcome, do not simply compress the scene description into fewer words. Include the relevant location (zone, area, or entry point). Always include subject names from "Objects in Scene" — do not replace named subjects with generic terms. No editorial qualifiers like "routine" or "suspicious."
+- `scene`: Describe how the sequence begins, then the progression of events — all significant movements and actions in order. For example, if a vehicle arrives and then a person exits, describe both sequentially. For named subjects (those with a `←` separator in "Objects in Scene"), always use their name — do not replace them with generic terms. For unnamed objects (e.g., "person", "car"), refer to them naturally with articles (e.g., "a person", "the car"). Your description should align with and support the threat level you assign.
+- `title`: Characterize **what took place and where** — interpret the overall purpose or outcome, do not simply compress the scene description into fewer words. Include the relevant location (zone, area, or entry point). For named subjects, always use their name. For unnamed objects, refer to them naturally with articles. No editorial qualifiers like "routine" or "suspicious."
 - `potential_threat_level`: Must be consistent with your scene description and the activity patterns above.
 {get_concern_prompt()}
 
@@ -190,6 +190,7 @@ Each line represents a detection state, not necessarily unique individuals. The 
                 if any("←" in obj for obj in review_data["unified_objects"]):
                     metadata.potential_threat_level = 0
 
+                metadata.title = metadata.title[0].upper() + metadata.title[1:]
                 metadata.time = review_data["start"]
                 return metadata
             except Exception as e:
@@ -199,6 +200,9 @@ Each line represents a detection state, not necessarily unique individuals. The 
                 )
                 return None
         else:
+            logger.debug(
+                f"Invalid response received from GenAI provider for review description on {review_data['camera']}. Response: {response}",
+            )
             return None
 
     def generate_review_summary(
@@ -297,7 +301,7 @@ Guidelines:
         """Generate a description for the frame."""
         try:
             prompt = camera_config.objects.genai.object_prompts.get(
-                event.label,
+                str(event.label),
                 camera_config.objects.genai.prompt,
             ).format(**model_to_dict(event))
         except KeyError as e:
@@ -307,7 +311,7 @@ Guidelines:
         logger.debug(f"Sending images to genai provider with prompt: {prompt}")
         return self._send(prompt, thumbnails)
 
-    def _init_provider(self):
+    def _init_provider(self) -> Any:
         """Initialize the client."""
         return None
 
@@ -319,6 +323,22 @@ Guidelines:
     ) -> Optional[str]:
         """Submit a request to the provider."""
         return None
+
+    @property
+    def supports_vision(self) -> bool:
+        """Whether the model supports vision/image input.
+
+        Defaults to True for cloud providers. Providers that can detect
+        capability at runtime (e.g. llama.cpp) should override this.
+        """
+        return True
+
+    def list_models(self) -> list[str]:
+        """Return the list of model names available from this provider.
+
+        Providers should override this to query their backend.
+        """
+        return []
 
     def get_context_size(self) -> int:
         """Get the context window size for this provider in tokens."""
@@ -402,7 +422,7 @@ Guidelines:
         }
 
 
-def load_providers():
+def load_providers() -> None:
     package_dir = os.path.dirname(__file__)
     for filename in os.listdir(package_dir):
         if filename.endswith(".py") and filename != "__init__.py":

@@ -724,6 +724,7 @@ export default function Settings() {
 
   // Save All state
   const [isSavingAll, setIsSavingAll] = useState(false);
+  const [isAnySectionSaving, setIsAnySectionSaving] = useState(false);
   const [restartDialogOpen, setRestartDialogOpen] = useState(false);
   const { send: sendRestart } = useRestart();
   const { data: fullSchema } = useSWR<RJSFSchema>("config/schema.json");
@@ -816,6 +817,27 @@ export default function Settings() {
     },
     [],
   );
+
+  // Show save/undo all buttons only when changes span multiple sections
+  // or the single changed section is not the one currently being viewed
+  const showSaveAllButtons = useMemo(() => {
+    const pendingKeys = Object.keys(pendingDataBySection);
+    if (pendingKeys.length === 0) return false;
+    if (pendingKeys.length >= 2) return true;
+
+    // Exactly one pending section — check if it matches the current view
+    const key = pendingKeys[0];
+    const menuKey = pendingKeyToMenuKey(key);
+    if (menuKey !== pageToggle) return true;
+
+    // For camera-scoped keys, also check if the camera matches
+    if (key.includes("::")) {
+      const cameraName = key.slice(0, key.indexOf("::"));
+      return cameraName !== selectedCamera;
+    }
+
+    return false;
+  }, [pendingDataBySection, pendingKeyToMenuKey, pageToggle, selectedCamera]);
 
   const handleSaveAll = useCallback(async () => {
     if (
@@ -1299,6 +1321,10 @@ export default function Settings() {
     [],
   );
 
+  const handleSectionSavingChange = useCallback((saving: boolean) => {
+    setIsAnySectionSaving(saving);
+  }, []);
+
   // The active profile being edited for the selected camera
   const activeEditingProfile = selectedCamera
     ? (editingProfile[selectedCamera] ?? null)
@@ -1397,10 +1423,12 @@ export default function Settings() {
           : "bg-selected";
 
       return (
-        <div className="flex w-full items-center justify-between pr-4 md:pr-0">
-          <div>{t("menu." + key)}</div>
+        <div className="flex w-full min-w-0 items-center justify-between pr-4 md:pr-0">
+          <div className="min-w-0 flex-1 whitespace-normal break-words">
+            {t("menu." + key)}
+          </div>
           {(showOverrideDot || showUnsavedDot) && (
-            <div className="ml-2 flex items-center gap-2">
+            <div className="ml-2 flex shrink-0 items-center gap-2">
               {showOverrideDot && (
                 <span
                   className={cn("inline-block size-2 rounded-full", dotColor)}
@@ -1484,7 +1512,7 @@ export default function Settings() {
                 );
               })}
             </div>
-            {hasPendingChanges && (
+            {showSaveAllButtons && (
               <div className="sticky bottom-0 z-50 mt-2 bg-background p-4">
                 <div className="flex flex-col items-center gap-2">
                   <div className="flex items-center gap-2">
@@ -1506,7 +1534,7 @@ export default function Settings() {
                     onClick={handleUndoAll}
                     variant="outline"
                     size="sm"
-                    disabled={isSavingAll}
+                    disabled={isSavingAll || isAnySectionSaving}
                     className="flex w-full items-center justify-center gap-2"
                   >
                     {t("button.undoAll", {
@@ -1518,7 +1546,11 @@ export default function Settings() {
                     onClick={handleSaveAll}
                     variant="select"
                     size="sm"
-                    disabled={isSavingAll || hasPendingValidationErrors}
+                    disabled={
+                      isSavingAll ||
+                      isAnySectionSaving ||
+                      hasPendingValidationErrors
+                    }
                     className="flex w-full items-center justify-center gap-2"
                   >
                     {isSavingAll ? (
@@ -1604,6 +1636,8 @@ export default function Settings() {
                     }
                     profilesUIEnabled={profilesUIEnabled}
                     setProfilesUIEnabled={setProfilesUIEnabled}
+                    isSavingAll={isSavingAll}
+                    onSectionSavingChange={handleSectionSavingChange}
                   />
                 );
               })()}
@@ -1654,7 +1688,7 @@ export default function Settings() {
           </Heading>
         </div>
         <div className="flex items-center gap-2">
-          {hasPendingChanges && (
+          {showSaveAllButtons && (
             <div
               className={cn(
                 "flex flex-row items-center gap-2",
@@ -1672,7 +1706,7 @@ export default function Settings() {
                 onClick={handleUndoAll}
                 variant="outline"
                 size="sm"
-                disabled={isSavingAll}
+                disabled={isSavingAll || isAnySectionSaving}
                 className="flex items-center justify-center gap-2"
               >
                 {t("button.undoAll", {
@@ -1684,7 +1718,11 @@ export default function Settings() {
                 variant="select"
                 size="sm"
                 onClick={handleSaveAll}
-                disabled={isSavingAll || hasPendingValidationErrors}
+                disabled={
+                  isSavingAll ||
+                  isAnySectionSaving ||
+                  hasPendingValidationErrors
+                }
                 className="flex items-center justify-center gap-2"
               >
                 {isSavingAll ? (
@@ -1747,7 +1785,7 @@ export default function Settings() {
                       <SidebarMenu>
                         <SidebarMenuItem>
                           <SidebarMenuButton
-                            className="ml-0"
+                            className="ml-0 h-auto min-h-8 py-1.5"
                             isActive={pageToggle === filteredItems[0].key}
                             onClick={() => {
                               if (
@@ -1788,6 +1826,7 @@ export default function Settings() {
                           {filteredItems.map((item) => (
                             <SidebarMenuSubItem key={item.key}>
                               <SidebarMenuSubButton
+                                className="h-auto w-full py-1.5"
                                 isActive={pageToggle === item.key}
                                 onClick={() => {
                                   if (
@@ -1840,6 +1879,8 @@ export default function Settings() {
                   onDeleteProfileSection={handleDeleteProfileForCurrentSection}
                   profilesUIEnabled={profilesUIEnabled}
                   setProfilesUIEnabled={setProfilesUIEnabled}
+                  isSavingAll={isSavingAll}
+                  onSectionSavingChange={handleSectionSavingChange}
                 />
               );
             })()}
