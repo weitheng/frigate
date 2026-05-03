@@ -4,14 +4,16 @@ import datetime
 import logging
 import os
 import random
+import re
 import shutil
 import string
 import subprocess as sp
 import threading
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
+import pytz  # type: ignore[import-untyped]
 from peewee import DoesNotExist
 
 from frigate.config import FfmpegConfig, FrigateConfig
@@ -27,7 +29,7 @@ from frigate.ffmpeg_presets import (
     EncodeTypeEnum,
     parse_preset_hardware_acceleration_encode,
 )
-from frigate.models import Export, Previews, Recordings
+from frigate.models import Export, Previews, Recordings, ReviewSegment
 from frigate.util.time import is_current_hour
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIME_LAPSE_FFMPEG_ARGS = "-vf setpts=0.04*PTS -r 30"
 TIMELAPSE_DATA_INPUT_ARGS = "-an -skip_frame nokey"
+
+# Matches the setpts factor used in timelapse exports (e.g. setpts=0.04*PTS).
+# Captures the floating-point factor so we can scale expected duration.
+SETPTS_FACTOR_RE = re.compile(r"setpts=([0-9]*\.?[0-9]+)\*PTS")
 
 # ffmpeg flags that can read from or write to arbitrary files
 BLOCKED_FFMPEG_ARGS = frozenset(
@@ -116,6 +122,7 @@ class RecordingExporter(threading.Thread):
         ffmpeg_input_args: Optional[str] = None,
         ffmpeg_output_args: Optional[str] = None,
         cpu_fallback: bool = False,
+        on_progress: Optional[Callable[[str, float], None]] = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -130,13 +137,344 @@ class RecordingExporter(threading.Thread):
         self.ffmpeg_input_args = ffmpeg_input_args
         self.ffmpeg_output_args = ffmpeg_output_args
         self.cpu_fallback = cpu_fallback
+        self.on_progress = on_progress
 
         # ensure export thumb dir
         Path(os.path.join(CLIPS_DIR, "export")).mkdir(exist_ok=True)
 
+    def _emit_progress(self, step: str, percent: float) -> None:
+        """Invoke the progress callback if one was supplied."""
+        if self.on_progress is None:
+            return
+        try:
+            self.on_progress(step, max(0.0, min(100.0, percent)))
+        except Exception:
+            logger.exception("Export progress callback failed")
+
+    def _expected_output_duration_seconds(self) -> float:
+        """Compute the expected duration of the output video in seconds.
+
+        Users often request a wide time range (e.g. a full hour) when only
+        a few minutes of recordings actually live on disk for that span,
+        so the requested range overstates the work and progress would
+        plateau very early. We sum the actual saved seconds from the
+        Recordings/Previews tables and use that as the input duration.
+        Timelapse exports then scale this by the setpts factor.
+        """
+        requested_duration = max(0.0, float(self.end_time - self.start_time))
+
+        recorded = self._sum_source_duration_seconds()
+        input_duration = (
+            recorded if recorded is not None and recorded > 0 else requested_duration
+        )
+
+        if not self.ffmpeg_output_args:
+            return input_duration
+
+        match = SETPTS_FACTOR_RE.search(self.ffmpeg_output_args)
+        if match is None:
+            return input_duration
+
+        try:
+            factor = float(match.group(1))
+        except ValueError:
+            return input_duration
+
+        if factor <= 0:
+            return input_duration
+
+        return input_duration * factor
+
+    def _sum_source_duration_seconds(self) -> Optional[float]:
+        """Sum saved-video seconds inside [start_time, end_time].
+
+        Queries Recordings or Previews depending on the playback source,
+        clamps each segment to the requested range, and returns the total.
+        Returns ``None`` on any error so the caller can fall back to the
+        requested range duration without losing progress reporting.
+        """
+        try:
+            if self.playback_source == PlaybackSourceEnum.recordings:
+                rows = (
+                    Recordings.select(Recordings.start_time, Recordings.end_time)
+                    .where(
+                        Recordings.start_time.between(self.start_time, self.end_time)
+                        | Recordings.end_time.between(self.start_time, self.end_time)
+                        | (
+                            (self.start_time > Recordings.start_time)
+                            & (self.end_time < Recordings.end_time)
+                        )
+                    )
+                    .where(Recordings.camera == self.camera)
+                    .iterator()
+                )
+            else:
+                rows = (
+                    Previews.select(Previews.start_time, Previews.end_time)
+                    .where(
+                        Previews.start_time.between(self.start_time, self.end_time)
+                        | Previews.end_time.between(self.start_time, self.end_time)
+                        | (
+                            (self.start_time > Previews.start_time)
+                            & (self.end_time < Previews.end_time)
+                        )
+                    )
+                    .where(Previews.camera == self.camera)
+                    .iterator()
+                )
+        except Exception:
+            logger.exception(
+                "Failed to sum source duration for export %s", self.export_id
+            )
+            return None
+
+        total = 0.0
+        try:
+            for row in rows:
+                clipped_start = max(float(row.start_time), float(self.start_time))
+                clipped_end = min(float(row.end_time), float(self.end_time))
+                if clipped_end > clipped_start:
+                    total += clipped_end - clipped_start
+        except Exception:
+            logger.exception(
+                "Failed to read recording rows for export %s", self.export_id
+            )
+            return None
+
+        return total
+
+    def _inject_progress_flags(self, ffmpeg_cmd: list[str]) -> list[str]:
+        """Insert FFmpeg progress reporting flags before the output path.
+
+        ``-progress pipe:2`` writes structured key=value lines to stderr,
+        ``-nostats`` suppresses the noisy default stats output.
+        """
+        if not ffmpeg_cmd:
+            return ffmpeg_cmd
+        return ffmpeg_cmd[:-1] + ["-progress", "pipe:2", "-nostats", ffmpeg_cmd[-1]]
+
+    def _run_ffmpeg_with_progress(
+        self,
+        ffmpeg_cmd: list[str],
+        playlist_lines: str | list[str],
+        step: str = "encoding",
+    ) -> tuple[int, str]:
+        """Run an FFmpeg export command, parsing progress events from stderr.
+
+        Returns ``(returncode, captured_stderr)``. Stdout is left attached to
+        the parent process so we don't have to drain it (and risk a deadlock
+        if the buffer fills). Progress percent is computed against the
+        expected output duration; values are clamped to [0, 100] inside
+        :py:meth:`_emit_progress`.
+        """
+        cmd = ["nice", "-n", str(PROCESS_PRIORITY_LOW)] + self._inject_progress_flags(
+            ffmpeg_cmd
+        )
+
+        if isinstance(playlist_lines, list):
+            stdin_payload = "\n".join(playlist_lines)
+        else:
+            stdin_payload = playlist_lines
+
+        expected_duration = self._expected_output_duration_seconds()
+
+        self._emit_progress(step, 0.0)
+
+        proc = sp.Popen(
+            cmd,
+            stdin=sp.PIPE,
+            stderr=sp.PIPE,
+            text=True,
+            encoding="ascii",
+            errors="replace",
+        )
+
+        assert proc.stdin is not None
+        assert proc.stderr is not None
+
+        try:
+            proc.stdin.write(stdin_payload)
+        except (BrokenPipeError, OSError):
+            # FFmpeg may have rejected the input early; still wait for it
+            # to terminate so the returncode is meaningful.
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+        captured: list[str] = []
+
+        try:
+            for raw_line in proc.stderr:
+                captured.append(raw_line)
+                line = raw_line.strip()
+
+                if not line:
+                    continue
+
+                if line.startswith("out_time_us="):
+                    if expected_duration <= 0:
+                        continue
+                    try:
+                        out_time_us = int(line.split("=", 1)[1])
+                    except (ValueError, IndexError):
+                        continue
+                    if out_time_us < 0:
+                        continue
+                    out_seconds = out_time_us / 1_000_000.0
+                    percent = (out_seconds / expected_duration) * 100.0
+                    self._emit_progress(step, percent)
+                elif line == "progress=end":
+                    self._emit_progress(step, 100.0)
+                    break
+        except Exception:
+            logger.exception("Failed reading FFmpeg progress for %s", self.export_id)
+
+        proc.wait()
+
+        # Drain any remaining stderr so callers can log it on failure.
+        try:
+            remaining = proc.stderr.read()
+            if remaining:
+                captured.append(remaining)
+        except Exception:
+            pass
+
+        return proc.returncode, "".join(captured)
+
     def get_datetime_from_timestamp(self, timestamp: int) -> str:
-        # return in iso format
+        # return in iso format using the configured ui.timezone when set,
+        # so the auto-generated export name reflects local time rather
+        # than the container's UTC clock
+        tz_name = self.config.ui.timezone
+        if tz_name:
+            try:
+                tz = pytz.timezone(tz_name)
+            except pytz.UnknownTimeZoneError:
+                tz = None
+            if tz is not None:
+                return datetime.datetime.fromtimestamp(timestamp, tz=tz).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
         return datetime.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _chapter_metadata_path(self) -> str:
+        return os.path.join(CACHE_DIR, f"export_chapters_{self.export_id}.txt")
+
+    def _build_chapter_metadata_file(self, recordings: list) -> Optional[str]:
+        """Write an FFmpeg metadata file with chapters for review items in range.
+
+        Chapter offsets are computed in *output time*: the VOD endpoint
+        concatenates recording clips back-to-back, so wall-clock gaps
+        between recordings collapse in the produced video. We walk the
+        same recording rows that feed the playlist and convert each
+        review item's wall-clock boundaries into output-time offsets.
+        Returns ``None`` when there are no recordings, no review items,
+        or any chapter would have zero output duration.
+        """
+        if not recordings:
+            return None
+
+        windows: list[tuple[float, float, float]] = []
+        output_offset = 0.0
+        for rec in recordings:
+            clipped_start = max(float(rec.start_time), float(self.start_time))
+            clipped_end = min(float(rec.end_time), float(self.end_time))
+            if clipped_end <= clipped_start:
+                continue
+            windows.append((clipped_start, clipped_end, output_offset))
+            output_offset += clipped_end - clipped_start
+
+        if not windows:
+            return None
+
+        try:
+            review_rows = list(
+                ReviewSegment.select(
+                    ReviewSegment.start_time,
+                    ReviewSegment.end_time,
+                    ReviewSegment.severity,
+                    ReviewSegment.data,
+                )
+                .where(
+                    ReviewSegment.start_time.between(self.start_time, self.end_time)
+                    | ReviewSegment.end_time.between(self.start_time, self.end_time)
+                    | (
+                        (self.start_time > ReviewSegment.start_time)
+                        & (self.end_time < ReviewSegment.end_time)
+                    )
+                )
+                .where(ReviewSegment.camera == self.camera)
+                .order_by(ReviewSegment.start_time.asc())
+                .iterator()
+            )
+        except Exception:
+            logger.exception(
+                "Failed to query review segments for export %s", self.export_id
+            )
+            return None
+
+        if not review_rows:
+            return None
+
+        total_output = windows[-1][2] + (windows[-1][1] - windows[-1][0])
+
+        def wall_to_output(t: float) -> float:
+            t = max(float(self.start_time), min(float(self.end_time), t))
+            for w_start, w_end, w_offset in windows:
+                if t < w_start:
+                    return w_offset
+                if t <= w_end:
+                    return w_offset + (t - w_start)
+            return total_output
+
+        chapter_blocks: list[str] = []
+        for review in review_rows:
+            start_out = wall_to_output(float(review.start_time))
+            end_out = wall_to_output(float(review.end_time))
+
+            # Drop chapters that fall entirely in a recording gap, or are
+            # too short to be navigable in a player.
+            if end_out - start_out < 1.0:
+                continue
+
+            data = review.data or {}
+            labels: list[str] = []
+            for obj in data.get("objects") or []:
+                label = str(obj).split("-")[0]
+                if label and label not in labels:
+                    labels.append(label)
+
+            title = str(review.severity).capitalize()
+            if labels:
+                title = f"{title}: {', '.join(labels)}"
+
+            chapter_blocks.append(
+                "[CHAPTER]\n"
+                "TIMEBASE=1/1000\n"
+                f"START={int(start_out * 1000)}\n"
+                f"END={int(end_out * 1000)}\n"
+                f"title={title}"
+            )
+
+        if not chapter_blocks:
+            return None
+
+        meta_path = self._chapter_metadata_path()
+        try:
+            with open(meta_path, "w", encoding="utf-8") as f:
+                f.write(";FFMETADATA1\n")
+                f.write("\n".join(chapter_blocks))
+                f.write("\n")
+        except OSError:
+            logger.exception(
+                "Failed to write chapter metadata file for export %s", self.export_id
+            )
+            return None
+
+        return meta_path
 
     def save_thumbnail(self, id: str) -> str:
         thumb_path = os.path.join(CLIPS_DIR, f"export/{id}.webp")
@@ -213,12 +551,18 @@ class RecordingExporter(threading.Thread):
             start_file = f"{file_start}{self.start_time}.{PREVIEW_FRAME_TYPE}"
             end_file = f"{file_start}{self.end_time}.{PREVIEW_FRAME_TYPE}"
             selected_preview = None
+            # Preview frames are written at most 1-2 fps during activity
+            # and as little as one every 30s during quiet periods, so a
+            # short export window can contain zero frames. Track the most
+            # recent frame before the window as a fallback.
+            fallback_preview = None
 
             for file in sorted(os.listdir(preview_dir)):
                 if not file.startswith(file_start):
                     continue
 
                 if file < start_file:
+                    fallback_preview = os.path.join(preview_dir, file)
                     continue
 
                 if file > end_file:
@@ -226,6 +570,9 @@ class RecordingExporter(threading.Thread):
 
                 selected_preview = os.path.join(preview_dir, file)
                 break
+
+            if not selected_preview:
+                selected_preview = fallback_preview
 
             if not selected_preview:
                 return ""
@@ -242,6 +589,24 @@ class RecordingExporter(threading.Thread):
         if type(internal_port) is str:
             internal_port = int(internal_port.split(":")[-1])
 
+        recordings = list(
+            Recordings.select(
+                Recordings.start_time,
+                Recordings.end_time,
+            )
+            .where(
+                Recordings.start_time.between(self.start_time, self.end_time)
+                | Recordings.end_time.between(self.start_time, self.end_time)
+                | (
+                    (self.start_time > Recordings.start_time)
+                    & (self.end_time < Recordings.end_time)
+                )
+            )
+            .where(Recordings.camera == self.camera)
+            .order_by(Recordings.start_time.asc())
+            .iterator()
+        )
+
         playlist_lines: list[str] = []
         if (self.end_time - self.start_time) <= MAX_PLAYLIST_SECONDS:
             playlist_url = f"http://127.0.0.1:{internal_port}/vod/{self.camera}/start/{self.start_time}/end/{self.end_time}/index.m3u8"
@@ -249,32 +614,13 @@ class RecordingExporter(threading.Thread):
                 f"-y -protocol_whitelist pipe,file,http,tcp -i {playlist_url}"
             )
         else:
-            # get full set of recordings
-            export_recordings = (
-                Recordings.select(
-                    Recordings.start_time,
-                    Recordings.end_time,
-                )
-                .where(
-                    Recordings.start_time.between(self.start_time, self.end_time)
-                    | Recordings.end_time.between(self.start_time, self.end_time)
-                    | (
-                        (self.start_time > Recordings.start_time)
-                        & (self.end_time < Recordings.end_time)
-                    )
-                )
-                .where(Recordings.camera == self.camera)
-                .order_by(Recordings.start_time.asc())
-            )
-
-            # Use pagination to process records in chunks
+            # Chunk the recording rows into pages so each playlist line
+            # references a bounded sub-range rather than the full export.
             page_size = 1000
-            num_pages = (export_recordings.count() + page_size - 1) // page_size
-
-            for page in range(1, num_pages + 1):
-                playlist = export_recordings.paginate(page, page_size)
+            for i in range(0, len(recordings), page_size):
+                chunk = recordings[i : i + page_size]
                 playlist_lines.append(
-                    f"file 'http://127.0.0.1:{internal_port}/vod/{self.camera}/start/{float(playlist[0].start_time)}/end/{float(playlist[-1].end_time)}/index.m3u8'"
+                    f"file 'http://127.0.0.1:{internal_port}/vod/{self.camera}/start/{float(chunk[0].start_time)}/end/{float(chunk[-1].end_time)}/index.m3u8'"
                 )
 
             ffmpeg_input = "-y -protocol_whitelist pipe,file,http,tcp -f concat -safe 0 -i /dev/stdin"
@@ -295,8 +641,12 @@ class RecordingExporter(threading.Thread):
                 )
             ).split(" ")
         else:
+            chapters_path = self._build_chapter_metadata_file(recordings)
+            chapter_args = (
+                f" -i {chapters_path} -map 0 -map_metadata 1" if chapters_path else ""
+            )
             ffmpeg_cmd = (
-                f"{self.config.ffmpeg.ffmpeg_path} -hide_banner {ffmpeg_input} -c copy -movflags +faststart"
+                f"{self.config.ffmpeg.ffmpeg_path} -hide_banner {ffmpeg_input}{chapter_args} -c copy -movflags +faststart"
             ).split(" ")
 
         # add metadata
@@ -406,6 +756,7 @@ class RecordingExporter(threading.Thread):
         logger.debug(
             f"Beginning export for {self.camera} from {self.start_time} to {self.end_time}"
         )
+        self._emit_progress("preparing", 0.0)
         export_name = (
             self.user_provided_name
             or f"{self.camera.replace('_', ' ')} {self.get_datetime_from_timestamp(self.start_time)} {self.get_datetime_from_timestamp(self.end_time)}"
@@ -443,16 +794,23 @@ class RecordingExporter(threading.Thread):
         except DoesNotExist:
             return
 
-        p = sp.run(
-            ["nice", "-n", str(PROCESS_PRIORITY_LOW)] + ffmpeg_cmd,
-            input="\n".join(playlist_lines),
-            encoding="ascii",
-            capture_output=True,
+        # When neither custom ffmpeg arg is set the default path uses
+        # `-c copy` (stream copy — no re-encoding). Report that as a
+        # distinct step so the UI doesn't mislabel a remux as encoding.
+        # The retry branch below always re-encodes because cpu_fallback
+        # requires custom args; it stays "encoding_retry".
+        is_stream_copy = (
+            self.ffmpeg_input_args is None and self.ffmpeg_output_args is None
+        )
+        initial_step = "copying" if is_stream_copy else "encoding"
+
+        returncode, stderr = self._run_ffmpeg_with_progress(
+            ffmpeg_cmd, playlist_lines, step=initial_step
         )
 
         # If export failed and cpu_fallback is enabled, retry without hwaccel
         if (
-            p.returncode != 0
+            returncode != 0
             and self.cpu_fallback
             and self.ffmpeg_input_args is not None
             and self.ffmpeg_output_args is not None
@@ -470,23 +828,23 @@ class RecordingExporter(threading.Thread):
                     video_path, use_hwaccel=False
                 )
 
-            p = sp.run(
-                ["nice", "-n", str(PROCESS_PRIORITY_LOW)] + ffmpeg_cmd,
-                input="\n".join(playlist_lines),
-                encoding="ascii",
-                capture_output=True,
+            returncode, stderr = self._run_ffmpeg_with_progress(
+                ffmpeg_cmd, playlist_lines, step="encoding_retry"
             )
 
-        if p.returncode != 0:
+        Path(self._chapter_metadata_path()).unlink(missing_ok=True)
+
+        if returncode != 0:
             logger.error(
                 f"Failed to export {self.playback_source.value} for command {' '.join(ffmpeg_cmd)}"
             )
-            logger.error(p.stderr)
+            logger.error(stderr)
             Path(video_path).unlink(missing_ok=True)
             Export.delete().where(Export.id == self.export_id).execute()
             Path(thumb_path).unlink(missing_ok=True)
             return
         else:
+            self._emit_progress("finalizing", 100.0)
             Export.update({Export.in_progress: False}).where(
                 Export.id == self.export_id
             ).execute()

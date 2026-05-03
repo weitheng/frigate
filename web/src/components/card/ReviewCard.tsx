@@ -81,11 +81,11 @@ export default function ReviewCard({
 
     axios
       .post(
-        `export/${event.camera}/start/${event.start_time + REVIEW_PADDING}/end/${endTime}`,
+        `export/${event.camera}/start/${event.start_time - REVIEW_PADDING}/end/${endTime}`,
         { playback: "realtime" },
       )
       .then((response) => {
-        if (response.status == 200) {
+        if (response.status < 300) {
           toast.success(t("export.toast.success"), {
             position: "top-center",
             action: (
@@ -275,7 +275,7 @@ export default function ReviewCard({
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
-        <ContextMenu key={event.id} modal={false}>
+        <ContextMenu key={event.id}>
           <ContextMenuTrigger asChild>{content}</ContextMenuTrigger>
           <ContextMenuContent>
             <ContextMenuItem>

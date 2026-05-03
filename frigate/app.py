@@ -52,6 +52,7 @@ from frigate.embeddings import EmbeddingProcess, EmbeddingsContext
 from frigate.events.audio import AudioProcessor
 from frigate.events.cleanup import EventCleanup
 from frigate.events.maintainer import EventProcessor
+from frigate.jobs.export import reap_stale_exports
 from frigate.jobs.motion_search import stop_all_motion_search_jobs
 from frigate.log import _stop_logging
 from frigate.models import (
@@ -188,17 +189,6 @@ class FrigateApp:
             except PermissionError:
                 logger.error("Unable to write to /config to save DB state")
 
-        def cleanup_timeline_db(db: SqliteExtDatabase) -> None:
-            db.execute_sql(
-                "DELETE FROM timeline WHERE source_id NOT IN (SELECT id FROM event);"
-            )
-
-            try:
-                with open(f"{CONFIG_DIR}/.timeline", "w") as f:
-                    f.write(str(datetime.datetime.now().timestamp()))
-            except PermissionError:
-                logger.error("Unable to write to /config to save DB state")
-
         # Migrate DB schema
         migrate_db = SqliteExtDatabase(self.config.database.path)
 
@@ -214,11 +204,6 @@ class FrigateApp:
             )
 
         router.run()
-
-        # this is a temporary check to clean up user DB from beta
-        # will be removed before final release
-        if not os.path.exists(f"{CONFIG_DIR}/.timeline"):
-            cleanup_timeline_db(migrate_db)
 
         # check if vacuum needs to be run
         if os.path.exists(f"{CONFIG_DIR}/.vacuum"):
@@ -610,6 +595,11 @@ class FrigateApp:
 
         # Clean up any stale replay camera artifacts (filesystem + DB)
         cleanup_replay_cameras()
+
+        # Reap any Export rows still marked in_progress from a previous
+        # session (crash, kill, broken migration). Runs synchronously before
+        # uvicorn binds so no API request can observe a stale row.
+        reap_stale_exports()
 
         self.init_inter_process_communicator()
         self.start_detectors()

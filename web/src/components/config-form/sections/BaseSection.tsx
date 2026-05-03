@@ -65,10 +65,14 @@ import {
   globalCameraDefaultSections,
   buildOverrides,
   buildConfigDataForPath,
+  flattenOverrides,
   getBaseCameraSectionValue,
   sanitizeSectionData as sharedSanitizeSectionData,
   requiresRestartForOverrides as sharedRequiresRestartForOverrides,
 } from "@/utils/configUtil";
+import SaveAllPreviewPopover, {
+  type SaveAllPreviewItem,
+} from "@/components/overlay/detail/SaveAllPreviewPopover";
 import RestartDialog from "@/components/overlay/dialog/RestartDialog";
 import { useRestart } from "@/api/ws";
 import type {
@@ -913,6 +917,34 @@ export function ConfigSection({
     );
   }, [sectionConfig?.renderers, sectionPath, cameraName, setPendingData]);
 
+  // Build a flat list of pending field changes for this section only.
+  // Mirrors the global Save All preview but scoped to the current section so
+  // users can inspect what will be saved without leaving the section.
+  const sectionPreviewItems = useMemo<SaveAllPreviewItem[]>(() => {
+    if (!hasChanges) return [];
+    if (!effectiveOverrides || typeof effectiveOverrides !== "object") {
+      return [];
+    }
+    const flattened = flattenOverrides(effectiveOverrides as JsonValue);
+    return flattened.map(({ path, value }) => ({
+      scope: effectiveLevel,
+      cameraName,
+      profileName: profileName
+        ? (profileFriendlyName ?? profileName)
+        : undefined,
+      fieldPath: path ? `${sectionPath}.${path}` : sectionPath,
+      value,
+    }));
+  }, [
+    hasChanges,
+    effectiveOverrides,
+    effectiveLevel,
+    cameraName,
+    profileName,
+    profileFriendlyName,
+    sectionPath,
+  ]);
+
   if (!modifiedSchema) {
     return null;
   }
@@ -1012,12 +1044,18 @@ export function ConfigSection({
         >
           {hasChanges && (
             <div className="flex items-center gap-2">
-              <span className="text-sm text-danger">
+              <span className="text-sm text-unsaved">
                 {t("unsavedChanges", {
                   ns: "views/settings",
                   defaultValue: "You have unsaved changes",
                 })}
               </span>
+              <SaveAllPreviewPopover
+                items={sectionPreviewItems}
+                className="h-7 w-7"
+                align="start"
+                side="top"
+              />
             </div>
           )}
           <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center md:w-auto">
@@ -1299,7 +1337,7 @@ export function ConfigSection({
                 {hasChanges && (
                   <Badge
                     variant="secondary"
-                    className="cursor-default bg-danger text-xs text-white hover:bg-danger"
+                    className="cursor-default bg-unsaved text-xs text-black hover:bg-unsaved"
                   >
                     {t("button.modified", {
                       ns: "common",

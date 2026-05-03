@@ -110,3 +110,17 @@ No. Frigate uses the TCP protocol to connect to your camera's RTSP URL. VLC auto
 TCP ensures that all data packets arrive in the correct order. This is crucial for video recording, decoding, and stream processing, which is why Frigate enforces a TCP connection. UDP is faster but less reliable, as it does not guarantee packet delivery or order, and VLC does not have the same requirements as Frigate.
 
 You can still configure Frigate to use UDP by using ffmpeg input args or the preset `preset-rtsp-udp`. See the [ffmpeg presets](/configuration/ffmpeg_presets) documentation.
+
+### Frigate is slow to start up with a "probing detect stream" message in the logs
+
+When `detect.width` and `detect.height` are not set, Frigate probes each camera's detect stream on startup (and when saving the config) to auto-detect its resolution. For RTSP streams Frigate probes with ffprobe and automatically retries over TCP if UDP doesn't respond, with a 5 second timeout per attempt. A camera that cannot be reached over either transport will add up to ~10 seconds to startup before Frigate falls through with default dimensions, which may show up as width `0` and height `0` in Camera Probe Info under System Metrics.
+
+To skip the probe entirely and make startup instant, set `detect.width` and `detect.height` explicitly in your camera config:
+
+```yaml
+cameras:
+  my_camera:
+    detect:
+      width: 1280
+      height: 720
+```

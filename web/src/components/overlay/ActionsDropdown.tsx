@@ -11,16 +11,18 @@ import { FaFilm } from "react-icons/fa6";
 type ActionsDropdownProps = {
   onDebugReplayClick: () => void;
   onExportClick: () => void;
+  onShareTimestampClick: () => void;
 };
 
 export default function ActionsDropdown({
   onDebugReplayClick,
   onExportClick,
-}: ActionsDropdownProps) {
+  onShareTimestampClick,
+}: Readonly<ActionsDropdownProps>) {
   const { t } = useTranslation(["components/dialog", "views/replay", "common"]);
 
   return (
-    <DropdownMenu modal={false}>
+    <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
           className="flex items-center gap-2"
@@ -36,6 +38,9 @@ export default function ActionsDropdown({
       <DropdownMenuContent align="end">
         <DropdownMenuItem onClick={onExportClick}>
           {t("menu.export", { ns: "common" })}
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onShareTimestampClick}>
+          {t("recording.shareTimestamp.label", { ns: "components/dialog" })}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={onDebugReplayClick}>
           {t("title", { ns: "views/replay" })}

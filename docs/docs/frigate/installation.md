@@ -9,7 +9,7 @@ Frigate is a Docker container that can be run on any Docker host including as a 
 
 :::tip
 
-If you already have Frigate installed as a Home Assistant App, check out the [getting started guide](../guides/getting_started#configuring-frigate) to configure Frigate.
+If you already have Frigate installed as a Home Assistant App, check out the [getting started guide](../guides/getting_started.md#configuring-frigate) to configure Frigate.
 
 :::
 
@@ -286,7 +286,7 @@ The MemryX MX3 Accelerator is available in the M.2 2280 form factor (like an NVM
 
 #### Installation
 
-To get started with MX3 hardware setup for your system, refer to the [Hardware Setup Guide](https://developer.memryx.com/get_started/hardware_setup.html).
+To get started with MX3 hardware setup for your system, refer to the [Hardware Setup Guide](https://developer.memryx.com/2p1/get_started/install_hardware.html).
 
 Then follow these steps for installing the correct driver/runtime configuration:
 
@@ -294,6 +294,12 @@ Then follow these steps for installing the correct driver/runtime configuration:
 2. Ensure it has execution permissions with `sudo chmod +x user_installation.sh`
 3. Run the script with `./user_installation.sh`
 4. **Restart your computer** to complete driver installation.
+
+:::warning
+
+For manual setup, use **MemryX SDK 2.1** only. Other SDK versions are not supported for this setup. See the [SDK 2.1 documentation](https://developer.memryx.com/2p1/index.html)
+
+:::
 
 #### Setup
 
@@ -482,7 +488,8 @@ services:
       - /dev/apex_0:/dev/apex_0 # Passes a PCIe Coral, follow driver instructions here https://github.com/jnicolson/gasket-builder
       - /dev/video11:/dev/video11 # For Raspberry Pi 4B
       - /dev/dri/renderD128:/dev/dri/renderD128 # AMD / Intel GPU, needs to be updated for your hardware
-      - /dev/accel:/dev/accel # Intel NPU
+      - /dev/kfd:/dev/kfd # AMD Kernel Fusion Driver for ROCm
+      - /dev/accel:/dev/accel # AMD / Intel NPU
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /path/to/your/config:/config

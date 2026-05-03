@@ -26,7 +26,7 @@ import {
   ReviewSummary,
   ZoomLevel,
 } from "@/types/review";
-import { getChunkedTimeDay } from "@/utils/timelineUtil";
+import { findChunkIndex, getChunkedTimeDay } from "@/utils/timelineUtil";
 import {
   MutableRefObject,
   useCallback,
@@ -42,7 +42,7 @@ import {
   isTablet,
 } from "react-device-detect";
 import { IoMdArrowRoundBack } from "react-icons/io";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import useSWR from "swr";
 import { TimeRange, TimelineType } from "@/types/timeline";
@@ -77,6 +77,9 @@ import {
   GenAISummaryDialog,
   GenAISummaryChip,
 } from "@/components/overlay/chip/GenAISummaryChip";
+import ShareTimestampDialog from "@/components/overlay/ShareTimestampDialog";
+import { shareOrCopy } from "@/utils/browserUtil";
+import { createRecordingReviewUrl } from "@/utils/recordingReviewUrl";
 
 const DATA_REFRESH_TIME = 600000; // 10 minutes
 
@@ -104,9 +107,10 @@ export function RecordingView({
   updateFilter,
   refreshData,
 }: RecordingViewProps) {
-  const { t } = useTranslation(["views/events"]);
+  const { t } = useTranslation(["views/events", "components/dialog"]);
   const { data: config } = useSWR<FrigateConfig>("config");
   const navigate = useNavigate();
+  const location = useLocation();
   const contentRef = useRef<HTMLDivElement | null>(null);
 
   // recordings summary
@@ -165,9 +169,7 @@ export function RecordingView({
     [timeRange],
   );
   const [selectedRangeIdx, setSelectedRangeIdx] = useState(
-    chunkedTimeRange.findIndex((chunk) => {
-      return chunk.after <= startTime && chunk.before >= startTime;
-    }),
+    findChunkIndex(chunkedTimeRange, startTime),
   );
   const currentTimeRange = useMemo<TimeRange>(
     () =>
@@ -205,6 +207,16 @@ export function RecordingView({
 
   const [debugReplayMode, setDebugReplayMode] = useState<ExportMode>("none");
   const [debugReplayRange, setDebugReplayRange] = useState<TimeRange>();
+  const [shareTimestampOpen, setShareTimestampOpen] = useState(false);
+  const [shareTimestampAtOpen, setShareTimestampAtOpen] = useState(
+    Math.floor(startTime),
+  );
+  const [shareTimestampOption, setShareTimestampOption] = useState<
+    "current" | "custom"
+  >("current");
+  const [customShareTimestamp, setCustomShareTimestamp] = useState(
+    Math.floor(startTime),
+  );
 
   // move to next clip
 
@@ -260,9 +272,7 @@ export function RecordingView({
 
   const updateSelectedSegment = useCallback(
     (currentTime: number, updateStartTime: boolean) => {
-      const index = chunkedTimeRange.findIndex(
-        (seg) => seg.after <= currentTime && seg.before >= currentTime,
-      );
+      const index = findChunkIndex(chunkedTimeRange, currentTime);
 
       if (index != -1) {
         if (updateStartTime) {
@@ -316,6 +326,34 @@ export function RecordingView({
     },
     [currentTimeRange, updateSelectedSegment],
   );
+
+  const onShareReviewLink = useCallback(
+    (timestamp: number) => {
+      const reviewUrl = createRecordingReviewUrl(location.pathname, {
+        camera: mainCamera,
+        timestamp: Math.floor(timestamp),
+      });
+
+      shareOrCopy(
+        reviewUrl,
+        t("recording.shareTimestamp.shareTitle", {
+          ns: "components/dialog",
+          camera: mainCamera,
+        }),
+      );
+    },
+    [location.pathname, mainCamera, t],
+  );
+
+  const handleBack = useCallback(() => {
+    // if we came from a direct share link, there is no history to go back to, so navigate to the homepage instead
+    if (recording?.navigationSource === "shared-link") {
+      navigate("/");
+      return;
+    }
+
+    navigate(-1);
+  }, [navigate, recording?.navigationSource]);
 
   useEffect(() => {
     if (!scrubbing) {
@@ -567,7 +605,7 @@ export function RecordingView({
               className="flex items-center gap-2.5 rounded-lg"
               aria-label={t("label.back", { ns: "common" })}
               size="sm"
-              onClick={() => navigate(-1)}
+              onClick={handleBack}
             >
               <IoMdArrowRoundBack className="size-5 text-secondary-foreground" />
               {isDesktop && (
@@ -664,12 +702,30 @@ export function RecordingView({
               />
             )}
             {isDesktop && (
+              <ShareTimestampDialog
+                currentTime={shareTimestampAtOpen}
+                open={shareTimestampOpen}
+                onOpenChange={setShareTimestampOpen}
+                selectedOption={shareTimestampOption}
+                setSelectedOption={setShareTimestampOption}
+                customTimestamp={customShareTimestamp}
+                setCustomTimestamp={setCustomShareTimestamp}
+                onShareTimestamp={onShareReviewLink}
+              />
+            )}
+            {isDesktop && (
               <ActionsDropdown
+                onShareTimestampClick={() => {
+                  const initialTimestamp = Math.floor(currentTime);
+
+                  setShareTimestampAtOpen(initialTimestamp);
+                  setShareTimestampOption("current");
+                  setCustomShareTimestamp(initialTimestamp);
+                  setShareTimestampOpen(true);
+                }}
                 onDebugReplayClick={() => {
-                  const now = new Date(timeRange.before * 1000);
-                  now.setHours(now.getHours() - 1);
                   setDebugReplayRange({
-                    after: now.getTime() / 1000,
+                    after: timeRange.before - 60,
                     before: timeRange.before,
                   });
                   setDebugReplayMode("select");
@@ -744,6 +800,7 @@ export function RecordingView({
                   mainControllerRef.current?.pause();
                 }
               }}
+              onShareTimestamp={onShareReviewLink}
               onUpdateFilter={updateFilter}
               setRange={setExportRange}
               setMode={setExportMode}
@@ -833,6 +890,7 @@ export function RecordingView({
                   isScrubbing={
                     scrubbing ||
                     exportMode == "timeline" ||
+                    exportMode == "timeline_multi" ||
                     debugReplayMode == "timeline"
                   }
                   supportsFullscreen={supportsFullScreen}
@@ -911,7 +969,7 @@ export function RecordingView({
             activeReviewItem={activeReviewItem}
             currentTime={currentTime}
             exportRange={
-              exportMode == "timeline"
+              exportMode == "timeline" || exportMode == "timeline_multi"
                 ? exportRange
                 : debugReplayMode == "timeline"
                   ? debugReplayRange

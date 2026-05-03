@@ -21,12 +21,18 @@ import {
   getBeginningOfDayTimestamp,
   getEndOfDayTimestamp,
 } from "@/utils/dateUtil";
+import {
+  parseRecordingReviewLink,
+  RECORDING_REVIEW_LINK_PARAM,
+} from "@/utils/recordingReviewUrl";
 import EventView from "@/views/events/EventView";
 import MotionSearchView from "@/views/motion-search/MotionSearchView";
 import { RecordingView } from "@/views/recording/RecordingView";
+import { useFrigateReviews } from "@/api/ws";
 import axios from "axios";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import useSWR from "swr";
 
 export default function Events() {
@@ -127,6 +133,14 @@ export default function Events() {
   const [notificationTab, setNotificationTab] =
     useState<TimelineType>("timeline");
 
+  const getReviewDayBounds = useCallback((date: Date) => {
+    const now = Date.now() / 1000;
+    return {
+      after: getBeginningOfDayTimestamp(date),
+      before: Math.min(getEndOfDayTimestamp(date), now),
+    };
+  }, []);
+
   useSearchEffect("tab", (tab: string) => {
     if (tab === "timeline" || tab === "events" || tab === "detail") {
       setNotificationTab(tab as TimelineType);
@@ -142,10 +156,7 @@ export default function Events() {
           const startTime = resp.data.start_time - REVIEW_PADDING;
           const date = new Date(startTime * 1000);
 
-          setReviewFilter({
-            after: getBeginningOfDayTimestamp(date),
-            before: getEndOfDayTimestamp(date),
-          });
+          setReviewFilter(getReviewDayBounds(date));
           setRecording(
             {
               camera: resp.data.camera,
@@ -232,6 +243,51 @@ export default function Events() {
     },
     [recording, setRecording, setReviewFilter],
   );
+
+  useSearchEffect(RECORDING_REVIEW_LINK_PARAM, (reviewLinkValue: string) => {
+    if (!config) {
+      return false;
+    }
+
+    const reviewLink = parseRecordingReviewLink(reviewLinkValue);
+
+    if (!reviewLink) {
+      toast.error(t("recordings.invalidSharedLink"), {
+        position: "top-center",
+      });
+      return true;
+    }
+
+    const validCamera =
+      config.cameras[reviewLink.camera] &&
+      allowedCameras.includes(reviewLink.camera);
+
+    if (!validCamera) {
+      toast.error(t("recordings.invalidSharedCamera"), {
+        position: "top-center",
+      });
+      return true;
+    }
+
+    setReviewFilter({
+      ...reviewFilter,
+      ...getReviewDayBounds(new Date(reviewLink.timestamp * 1000)),
+    });
+    setRecording(
+      {
+        camera: reviewLink.camera,
+        startTime: reviewLink.timestamp,
+        // severity not actually applicable here, but the type requires it
+        // this pattern is also used LiveCameraView to enter recording view
+        severity: "alert",
+        timelineType: notificationTab,
+        navigationSource: "shared-link",
+      },
+      true,
+    );
+
+    return true;
+  });
 
   // review paging
 
@@ -326,6 +382,32 @@ export default function Events() {
     };
   }, [reviews]);
 
+  // update review items in place when a review segment ends
+  const reviewUpdate = useFrigateReviews();
+  const [endedReviews, setEndedReviews] = useState(
+    new Map<string, ReviewSegment>(),
+  );
+
+  useEffect(() => {
+    if (reviewUpdate?.type === "end" && reviews) {
+      updateSegments(
+        (data) => {
+          if (!data) return data;
+          return data.map((seg) =>
+            seg.id === reviewUpdate.after.id ? reviewUpdate.after : seg,
+          );
+        },
+        { revalidate: false, populateCache: true },
+      );
+      setEndedReviews((prev) =>
+        new Map(prev).set(reviewUpdate.after.id, reviewUpdate.after),
+      );
+    }
+    // reviews is intentionally excluded - only used to guard against
+    // updating the SWR cache before data has loaded
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewUpdate, updateSegments]);
+
   const currentItems = useMemo(() => {
     if (!reviewItems || !severity) {
       return null;
@@ -351,6 +433,13 @@ export default function Events() {
     // only refresh when severity or filter changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [severity, reviewFilter, showReviewed, reviewItems?.all.length]);
+
+  // overlay end_time updates onto currentItems without re-running
+  // the has_been_reviewed filter, so hover-reviewed items stay visible
+  const displayItems = useMemo(() => {
+    if (!currentItems || endedReviews.size === 0) return currentItems;
+    return currentItems.map((seg) => endedReviews.get(seg.id) ?? seg);
+  }, [currentItems, endedReviews]);
 
   // review summary
 
@@ -603,7 +692,7 @@ export default function Events() {
     ) : (
       <EventView
         reviewItems={reviewItems}
-        currentReviewItems={currentItems}
+        currentReviewItems={displayItems}
         reviewSummary={reviewSummary}
         recordingsSummary={recordingsSummary}
         relevantPreviews={allPreviews}

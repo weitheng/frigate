@@ -711,23 +711,44 @@ def ffprobe_stream(ffmpeg, path: str, detailed: bool = False) -> sp.CompletedPro
     else:
         format_entries = None
 
-    ffprobe_cmd = [
-        ffmpeg.ffprobe_path,
-        "-timeout",
-        "1000000",
-        "-print_format",
-        "json",
-        "-show_entries",
-        f"stream={stream_entries}",
-    ]
+    def run(rtsp_transport: Optional[str] = None) -> sp.CompletedProcess:
+        cmd = [ffmpeg.ffprobe_path]
+        if rtsp_transport:
+            cmd += ["-rtsp_transport", rtsp_transport]
+        cmd += [
+            "-timeout",
+            "1000000",
+            "-print_format",
+            "json",
+            "-show_entries",
+            f"stream={stream_entries}",
+        ]
+        if detailed and format_entries:
+            cmd.extend(["-show_entries", f"format={format_entries}"])
+        cmd.extend(["-loglevel", "error", clean_path])
+        try:
+            return sp.run(cmd, capture_output=True, timeout=6)
+        except sp.TimeoutExpired as e:
+            logger.info(
+                "ffprobe timed out while probing %s (transport=%s)",
+                clean_camera_user_pass(path),
+                rtsp_transport or "default",
+            )
+            return sp.CompletedProcess(
+                args=cmd,
+                returncode=1,
+                stdout=e.stdout or b"",
+                stderr=(e.stderr or b"") + b"\nffprobe timed out",
+            )
 
-    # Add format entries for detailed mode
-    if detailed and format_entries:
-        ffprobe_cmd.extend(["-show_entries", f"format={format_entries}"])
+    result = run()
 
-    ffprobe_cmd.extend(["-loglevel", "error", clean_path])
+    # For RTSP: retry with explicit TCP transport if the first attempt failed
+    # (default UDP may be blocked)
+    if result.returncode != 0 and clean_path.startswith("rtsp://"):
+        result = run(rtsp_transport="tcp")
 
-    return sp.run(ffprobe_cmd, capture_output=True)
+    return result
 
 
 def vainfo_hwaccel(device_name: Optional[str] = None) -> sp.CompletedProcess:
@@ -807,10 +828,15 @@ async def get_video_properties(
 ) -> dict[str, Any]:
     async def probe_with_ffprobe(
         url: str,
+        rtsp_transport: Optional[str] = None,
     ) -> tuple[bool, int, int, Optional[str], float]:
         """Fallback using ffprobe: returns (valid, width, height, codec, duration)."""
-        cmd = [
-            ffmpeg.ffprobe_path,
+        cmd = [ffmpeg.ffprobe_path]
+        if rtsp_transport:
+            cmd += ["-rtsp_transport", rtsp_transport]
+        cmd += [
+            "-rw_timeout",
+            "5000000",
             "-v",
             "quiet",
             "-print_format",
@@ -819,11 +845,23 @@ async def get_video_properties(
             "-show_streams",
             url,
         ]
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            stdout, _ = await proc.communicate()
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=6)
+            except asyncio.TimeoutError:
+                logger.info(
+                    "ffprobe timed out while probing %s (transport=%s)",
+                    clean_camera_user_pass(url),
+                    rtsp_transport or "default",
+                )
+                proc.kill()
+                await proc.wait()
+                return False, 0, 0, None, -1
+
             if proc.returncode != 0:
                 return False, 0, 0, None, -1
 
@@ -872,12 +910,26 @@ async def get_video_properties(
         cap.release()
         return valid, width, height, fourcc, duration
 
-    # try cv2 first
-    has_video, width, height, fourcc, duration = probe_with_cv2(url)
+    is_rtsp = url.startswith("rtsp://")
 
-    # fallback to ffprobe if needed
-    if not has_video or (get_duration and duration < 0):
+    if is_rtsp:
+        # skip cv2 for RTSP: its FFmpeg backend has a hardcoded ~30s internal
+        # timeout that cannot be shortened per-call, and ffprobe bounded by
+        # -rw_timeout handles RTSP probing reliably
         has_video, width, height, fourcc, duration = await probe_with_ffprobe(url)
+    else:
+        # try cv2 first for local files, HTTP, RTMP
+        has_video, width, height, fourcc, duration = probe_with_cv2(url)
+
+        # fallback to ffprobe if needed
+        if not has_video or (get_duration and duration < 0):
+            has_video, width, height, fourcc, duration = await probe_with_ffprobe(url)
+
+    # last resort for RTSP: try TCP transport, since default UDP may be blocked
+    if (not has_video or (get_duration and duration < 0)) and is_rtsp:
+        has_video, width, height, fourcc, duration = await probe_with_ffprobe(
+            url, rtsp_transport="tcp"
+        )
 
     result: dict[str, Any] = {"has_valid_video": has_video}
     if has_video:

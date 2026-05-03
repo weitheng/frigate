@@ -28,11 +28,7 @@ import useOptimisticState from "@/hooks/use-optimistic-state";
 import { isMobile } from "react-device-detect";
 import { FaVideo } from "react-icons/fa";
 import { CameraConfig, FrigateConfig } from "@/types/frigateConfig";
-import type {
-  ConfigSectionData,
-  JsonObject,
-  JsonValue,
-} from "@/types/configForm";
+import type { ConfigSectionData, JsonObject } from "@/types/configForm";
 import useSWR from "swr";
 import FilterSwitch from "@/components/filter/FilterSwitch";
 import { ZoneMaskFilterButton } from "@/components/filter/ZoneMaskFilter";
@@ -93,6 +89,7 @@ import { mutate } from "swr";
 import { RJSFSchema } from "@rjsf/utils";
 import {
   buildConfigDataForPath,
+  flattenOverrides,
   parseProfileFromSectionPath,
   prepareSectionSavePayload,
   PROFILE_ELIGIBLE_SECTIONS,
@@ -188,25 +185,6 @@ const parsePendingDataKey = (pendingDataKey: string) => {
     cameraName: undefined,
     sectionPath: pendingDataKey,
   };
-};
-
-const flattenOverrides = (
-  value: JsonValue | undefined,
-  path: string[] = [],
-): Array<{ path: string; value: JsonValue }> => {
-  if (value === undefined) return [];
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return [{ path: path.join("."), value }];
-  }
-
-  const entries = Object.entries(value);
-  if (entries.length === 0) {
-    return [{ path: path.join("."), value: {} }];
-  }
-
-  return entries.flatMap(([key, entryValue]) =>
-    flattenOverrides(entryValue, [...path, key]),
-  );
 };
 
 const createSectionPage = (
@@ -1435,7 +1413,7 @@ export default function Settings() {
                 />
               )}
               {showUnsavedDot && (
-                <span className="inline-block size-2 rounded-full bg-danger" />
+                <span className="inline-block size-2 rounded-full bg-unsaved" />
               )}
             </div>
           )}
@@ -1516,7 +1494,7 @@ export default function Settings() {
               <div className="sticky bottom-0 z-50 mt-2 bg-background p-4">
                 <div className="flex flex-col items-center gap-2">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm text-danger">
+                    <span className="text-sm text-unsaved">
                       {t("unsavedChanges", {
                         ns: "views/settings",
                         defaultValue: "You have unsaved changes",
@@ -2018,7 +1996,6 @@ function CameraSelectButton({
 
   return (
     <DropdownMenu
-      modal={false}
       open={open}
       onOpenChange={(open: boolean) => {
         if (!open) {

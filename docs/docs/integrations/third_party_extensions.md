@@ -17,6 +17,10 @@ Please use your own knowledge to assess and vet them before you install anything
 
 The [Advanced Camera Card](https://card.camera/#/README) is a Home Assistant dashboard card with deep Frigate integration.
 
+## [cctvQL](https://github.com/arunrajiah/cctvql)
+
+[cctvQL](https://github.com/arunrajiah/cctvql) is a natural language query layer for Frigate and other CCTV systems. It connects to Frigate's REST API and MQTT broker to let you ask conversational questions about cameras and events (e.g. "Was there motion at the front door last night?"), with support for real-time event streaming, anomaly detection, PTZ control, alert rules, and a Home Assistant custom component.
+
 ## [Double Take](https://github.com/skrashevich/double-take)
 
 [Double Take](https://github.com/skrashevich/double-take) provides an unified UI and API for processing and training images for facial recognition.
@@ -34,6 +38,10 @@ This is a fork (with fixed errors and new features) of [original Double Take](ht
 ## [Frigate telegram](https://github.com/OldTyT/frigate-telegram)
 
 [Frigate telegram](https://github.com/OldTyT/frigate-telegram) makes it possible to send events from Frigate to Telegram. Events are sent as a message with a text description, video, and thumbnail.
+
+## [kiosk-monitor](https://github.com/extremeshok/kiosk-monitor)
+
+[kiosk-monitor](https://github.com/extremeshok/kiosk-monitor) is a Raspberry Pi watchdog that runs Chromium fullscreen on a Frigate dashboard (optionally with VLC on a second monitor for an RTSP camera stream), auto-restarts on frozen screens or unreachable URLs, and ships a Birdseye-aware Chromium helper that auto-sizes the grid to the display.
 
 ## [Periscope](https://github.com/maksz42/periscope)
 
