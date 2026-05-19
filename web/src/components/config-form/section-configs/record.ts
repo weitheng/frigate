@@ -46,7 +46,22 @@ const record: SectionConfigOverrides = {
     uiSchema: {
       export: {
         hwaccel_args: {
-          "ui:options": { suppressMultiSchema: true, size: "lg" },
+          "ui:widget": "FfmpegArgsWidget",
+          "ui:options": {
+            suppressMultiSchema: true,
+            ffmpegPresetField: "hwaccel_args",
+          },
+        },
+      },
+      "alerts.retain.mode": {
+        "ui:options": { enumI18nPrefix: "retainMode" },
+      },
+      "detections.retain.mode": {
+        "ui:options": { enumI18nPrefix: "retainMode" },
+      },
+      "preview.quality": {
+        "ui:options": {
+          enumI18nPrefix: "previewQuality",
         },
       },
     },

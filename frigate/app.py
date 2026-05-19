@@ -144,7 +144,7 @@ class FrigateApp:
         for d in dirs:
             if not os.path.exists(d) and not os.path.islink(d):
                 logger.info(f"Creating directory: {d}")
-                os.makedirs(d)
+                os.makedirs(d, exist_ok=True)
             else:
                 logger.debug(f"Skipping directory: {d}")
 
@@ -428,18 +428,11 @@ class FrigateApp:
         self.camera_maintainer.start()
 
     def start_audio_processor(self) -> None:
-        audio_cameras = [
-            c
-            for c in self.config.cameras.values()
-            if c.enabled and c.audio.enabled_in_config
-        ]
-
-        if audio_cameras:
-            self.audio_process = AudioProcessor(
-                self.config, audio_cameras, self.camera_metrics, self.stop_event
-            )
-            self.audio_process.start()
-            self.processes["audio_detector"] = self.audio_process.pid or 0
+        self.audio_process = AudioProcessor(
+            self.config, self.camera_metrics, self.stop_event
+        )
+        self.audio_process.start()
+        self.processes["audio_detector"] = self.audio_process.pid or 0
 
     def start_timeline_processor(self) -> None:
         self.timeline_processor = TimelineProcessor(

@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { baseUrl } from "@/api/baseUrl";
 import { Drawer, DrawerContent, DrawerTrigger } from "../ui/drawer";
 import { Button } from "../ui/button";
 import { FaArrowDown, FaCalendarAlt, FaCog, FaFilter } from "react-icons/fa";
@@ -190,7 +191,11 @@ export default function MobileReviewSettingsDrawer({
       toast.success(t("export.toast.queued", { ns: "components/dialog" }), {
         position: "top-center",
         action: (
-          <a href="/export" target="_blank" rel="noopener noreferrer">
+          <a
+            href={`${baseUrl}export`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
             <Button>
               {t("export.toast.view", { ns: "components/dialog" })}
             </Button>
@@ -262,10 +267,7 @@ export default function MobileReviewSettingsDrawer({
         end_time: debugReplayRange.before,
       });
 
-      if (response.status === 200) {
-        toast.success(t("dialog.toast.success", { ns: "views/replay" }), {
-          position: "top-center",
-        });
+      if (response.status === 202 || response.status === 200) {
         setDebugReplayMode("none");
         setDebugReplayRange(undefined);
         setDrawerMode("none");

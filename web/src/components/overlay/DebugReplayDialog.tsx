@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { baseUrl } from "@/api/baseUrl";
 import {
   Dialog,
   DialogContent,
@@ -209,10 +210,7 @@ export default function DebugReplayDialog({
         end_time: range.before,
       })
       .then((response) => {
-        if (response.status === 200) {
-          toast.success(t("dialog.toast.success"), {
-            position: "top-center",
-          });
+        if (response.status === 202 || response.status === 200) {
           setMode("none");
           setRange(undefined);
           navigate("/replay");
@@ -230,7 +228,11 @@ export default function DebugReplayDialog({
             closeButton: true,
             dismissible: false,
             action: (
-              <a href="/replay" target="_blank" rel="noopener noreferrer">
+              <a
+                href={`${baseUrl}replay`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
                 <Button>{t("dialog.toast.goToReplay")}</Button>
               </a>
             ),

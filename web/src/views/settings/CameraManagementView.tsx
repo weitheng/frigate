@@ -1,5 +1,5 @@
 import Heading from "@/components/ui/heading";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CONTROL_COLUMN_CLASS_NAME,
   SettingsGroupCard,
@@ -14,8 +14,18 @@ import { useTranslation } from "react-i18next";
 import CameraEditForm from "@/components/settings/CameraEditForm";
 import CameraWizardDialog from "@/components/settings/CameraWizardDialog";
 import DeleteCameraDialog from "@/components/overlay/dialog/DeleteCameraDialog";
-import { LuPencil, LuPlus, LuTrash2 } from "react-icons/lu";
+import {
+  LuCheck,
+  LuExternalLink,
+  LuGripVertical,
+  LuPencil,
+  LuPlus,
+  LuTrash2,
+} from "react-icons/lu";
+import { Reorder, useDragControls } from "framer-motion";
 import { IoMdArrowRoundBack } from "react-icons/io";
+import { Link } from "react-router-dom";
+import { useDocDomain } from "@/hooks/use-doc-domain";
 import { isDesktop } from "react-device-detect";
 import { CameraNameLabel } from "@/components/camera/FriendlyNameLabel";
 import { Switch } from "@/components/ui/switch";
@@ -43,6 +53,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+const REORDER_SAVED_INDICATOR_MS = 1500;
+
+type ReorderSaveStatus = "idle" | "saving" | "saved";
+
 type CameraManagementViewProps = {
   setUnsavedChanges: React.Dispatch<React.SetStateAction<boolean>>;
   profileState?: ProfileState;
@@ -52,7 +66,7 @@ export default function CameraManagementView({
   setUnsavedChanges,
   profileState,
 }: CameraManagementViewProps) {
-  const { t } = useTranslation(["views/settings"]);
+  const { t } = useTranslation(["views/settings", "common"]);
 
   const { data: config, mutate: updateConfig } =
     useSWR<FrigateConfig>("config");
@@ -70,21 +84,111 @@ export default function CameraManagementView({
   const [restartDialogOpen, setRestartDialogOpen] = useState(false);
   const { send: sendRestart } = useRestart();
 
-  // List of cameras for dropdown
   const enabledCameras = useMemo(() => {
     if (config) {
       return Object.keys(config.cameras)
         .filter((camera) => config.cameras[camera].enabled_in_config)
-        .sort();
+        .sort((a, b) => {
+          const orderA = config.cameras[a].ui?.order ?? 0;
+          const orderB = config.cameras[b].ui?.order ?? 0;
+          if (orderA !== orderB) return orderA - orderB;
+          return a.localeCompare(b);
+        });
     }
     return [];
   }, [config]);
+
+  // Diverges from config during a drag and while the save is in flight.
+  const [orderedCameras, setOrderedCameras] =
+    useState<string[]>(enabledCameras);
+  const orderedCamerasRef = useRef(orderedCameras);
+  useEffect(() => {
+    orderedCamerasRef.current = orderedCameras;
+  }, [orderedCameras]);
+
+  useEffect(() => {
+    setOrderedCameras((prev) => {
+      if (
+        prev.length === enabledCameras.length &&
+        prev.every((cam, i) => cam === enabledCameras[i])
+      ) {
+        return prev;
+      }
+      return enabledCameras;
+    });
+  }, [enabledCameras]);
+
+  const [reorderSaveStatus, setReorderSaveStatus] =
+    useState<ReorderSaveStatus>("idle");
+  const reorderSavedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  useEffect(() => {
+    return () => {
+      if (reorderSavedTimerRef.current) {
+        clearTimeout(reorderSavedTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleReorderDragEnd = useCallback(async () => {
+    const current = orderedCamerasRef.current;
+    if (
+      current.length === enabledCameras.length &&
+      current.every((cam, i) => cam === enabledCameras[i])
+    ) {
+      return;
+    }
+
+    const cameraUpdates: Record<string, { ui: { order: number } }> = {};
+    current.forEach((cam, i) => {
+      cameraUpdates[cam] = { ui: { order: i * 10 } };
+    });
+
+    if (reorderSavedTimerRef.current) {
+      clearTimeout(reorderSavedTimerRef.current);
+      reorderSavedTimerRef.current = null;
+    }
+    setReorderSaveStatus("saving");
+
+    try {
+      await axios.put("config/set", {
+        requires_restart: 0,
+        config_data: { cameras: cameraUpdates },
+      });
+      await updateConfig();
+      setReorderSaveStatus("saved");
+      reorderSavedTimerRef.current = setTimeout(() => {
+        setReorderSaveStatus("idle");
+        reorderSavedTimerRef.current = null;
+      }, REORDER_SAVED_INDICATOR_MS);
+    } catch (error) {
+      setOrderedCameras(enabledCameras);
+      setReorderSaveStatus("idle");
+      const errorMessage =
+        axios.isAxiosError(error) &&
+        (error.response?.data?.message || error.response?.data?.detail)
+          ? error.response?.data?.message || error.response?.data?.detail
+          : t("toast.save.error.noMessage", { ns: "common" });
+
+      toast.error(t("toast.save.error.title", { errorMessage, ns: "common" }), {
+        position: "top-center",
+      });
+    }
+  }, [enabledCameras, updateConfig, t]);
 
   const disabledCameras = useMemo(() => {
     if (config) {
       return Object.keys(config.cameras)
         .filter((camera) => !config.cameras[camera].enabled_in_config)
         .sort();
+    }
+    return [];
+  }, [config]);
+
+  const allCameras = useMemo(() => {
+    if (config) {
+      return Object.keys(config.cameras).sort();
     }
     return [];
   }, [config]);
@@ -113,9 +217,12 @@ export default function CameraManagementView({
         <div className="scrollbar-container flex-1 overflow-y-auto pb-2">
           {viewMode === "settings" ? (
             <>
-              <Heading as="h4" className="mb-6">
+              <Heading as="h4" className="mb-2">
                 {t("cameraManagement.title")}
               </Heading>
+              <p className="mb-6 max-w-5xl text-sm text-muted-foreground">
+                {t("cameraManagement.description")}
+              </p>
 
               <div className="w-full max-w-5xl space-y-6">
                 <div className="flex gap-2">
@@ -161,22 +268,26 @@ export default function CameraManagementView({
                           </p>
                         </Label>
                       </div>
-                      <div className="max-w-md space-y-2 rounded-lg bg-secondary p-4">
-                        {enabledCameras.map((camera) => (
-                          <div
-                            key={camera}
-                            className="flex flex-row items-center justify-between"
-                          >
-                            <div className="flex items-center gap-1">
-                              <CameraNameLabel camera={camera} />
-                              <CameraFriendlyNameEditor
-                                cameraName={camera}
-                                onConfigChanged={updateConfig}
-                              />
-                            </div>
-                            <CameraEnableSwitch cameraName={camera} />
-                          </div>
-                        ))}
+                      <div className="max-w-md space-y-1.5">
+                        <Reorder.Group
+                          as="div"
+                          axis="y"
+                          values={orderedCameras}
+                          onReorder={setOrderedCameras}
+                          className="space-y-2 rounded-lg bg-secondary p-4"
+                        >
+                          {orderedCameras.map((camera) => (
+                            <EnabledCameraRow
+                              key={camera}
+                              camera={camera}
+                              onConfigChanged={updateConfig}
+                              onDragEnd={handleReorderDragEnd}
+                            />
+                          ))}
+                        </Reorder.Group>
+                        <ReorderSaveStatusIndicator
+                          status={reorderSaveStatus}
+                        />
                       </div>
                       <p className="text-sm text-muted-foreground md:hidden">
                         <Trans ns="views/settings">
@@ -235,6 +346,15 @@ export default function CameraManagementView({
                       onConfigChanged={updateConfig}
                     />
                   )}
+
+                {config?.lpr?.enabled && allCameras.length > 0 && (
+                  <CameraTypeSection
+                    cameras={allCameras}
+                    config={config}
+                    onConfigChanged={updateConfig}
+                    setRestartDialogOpen={setRestartDialogOpen}
+                  />
+                )}
               </div>
             </>
           ) : (
@@ -288,6 +408,80 @@ export default function CameraManagementView({
   );
 }
 
+type ReorderSaveStatusIndicatorProps = {
+  status: ReorderSaveStatus;
+};
+
+function ReorderSaveStatusIndicator({
+  status,
+}: ReorderSaveStatusIndicatorProps) {
+  const { t } = useTranslation(["views/settings"]);
+  return (
+    <div
+      aria-live="polite"
+      className={cn(
+        "flex h-4 items-center justify-start gap-1 text-xs transition-opacity duration-200",
+        status === "idle" ? "opacity-0" : "opacity-100",
+      )}
+    >
+      {status === "saving" && (
+        <span className="text-muted-foreground">
+          {t("cameraManagement.streams.saving")}
+        </span>
+      )}
+      {status === "saved" && (
+        <span className="flex items-center gap-1 text-success">
+          <LuCheck className="size-3.5" />
+          {t("cameraManagement.streams.saved")}
+        </span>
+      )}
+    </div>
+  );
+}
+
+type EnabledCameraRowProps = {
+  camera: string;
+  onConfigChanged: () => Promise<unknown>;
+  onDragEnd: () => void;
+};
+
+function EnabledCameraRow({
+  camera,
+  onConfigChanged,
+  onDragEnd,
+}: EnabledCameraRowProps) {
+  const { t } = useTranslation(["views/settings"]);
+  const controls = useDragControls();
+
+  return (
+    <Reorder.Item
+      as="div"
+      value={camera}
+      dragListener={false}
+      dragControls={controls}
+      onDragEnd={onDragEnd}
+      className="flex flex-row items-center justify-between"
+    >
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onPointerDown={(e) => controls.start(e)}
+          className="-ml-1 cursor-grab touch-none rounded p-1 text-muted-foreground hover:text-primary active:cursor-grabbing"
+          aria-label={t("cameraManagement.streams.reorderHandle")}
+        >
+          <LuGripVertical className="size-4" />
+        </button>
+        <CameraNameLabel camera={camera} />
+        <CameraFriendlyNameEditor
+          cameraName={camera}
+          onConfigChanged={onConfigChanged}
+        />
+      </div>
+      <CameraEnableSwitch cameraName={camera} />
+    </Reorder.Item>
+  );
+}
+
 type CameraEnableSwitchProps = {
   cameraName: string;
 };
@@ -295,12 +489,18 @@ type CameraEnableSwitchProps = {
 function CameraEnableSwitch({ cameraName }: CameraEnableSwitchProps) {
   const { payload: enabledState, send: sendEnabled } =
     useEnabledState(cameraName);
+  const { data: config } = useSWR<FrigateConfig>("config");
+
+  const isChecked =
+    enabledState === "ON" || enabledState === "OFF"
+      ? enabledState === "ON"
+      : (config?.cameras?.[cameraName]?.enabled ?? false);
 
   return (
     <div className="flex flex-row items-center">
       <Switch
         id={`camera-enabled-${cameraName}`}
-        checked={enabledState === "ON"}
+        checked={isChecked}
         onCheckedChange={(isChecked) => {
           sendEnabled(isChecked ? "ON" : "OFF");
         }}
@@ -494,6 +694,196 @@ function CameraConfigEnableSwitch({
         />
       )}
     </div>
+  );
+}
+
+type CameraTypeSectionProps = {
+  cameras: string[];
+  config: FrigateConfig | undefined;
+  onConfigChanged: () => Promise<unknown>;
+  setRestartDialogOpen: React.Dispatch<React.SetStateAction<boolean>>;
+};
+
+function CameraTypeSection({
+  cameras,
+  config,
+  onConfigChanged,
+  setRestartDialogOpen,
+}: CameraTypeSectionProps) {
+  const { t } = useTranslation([
+    "views/settings",
+    "common",
+    "components/dialog",
+  ]);
+  const { getLocaleDocUrl } = useDocDomain();
+  const [savingCamera, setSavingCamera] = useState<string | null>(null);
+  // Optimistic local state: the parsed config API doesn't reflect type
+  // changes until Frigate restarts, so we track saved values locally.
+  const [localOverrides, setLocalOverrides] = useState<Record<string, string>>(
+    {},
+  );
+
+  const handleTypeChange = useCallback(
+    async (camera: string, value: string) => {
+      setSavingCamera(camera);
+      try {
+        const typeValue = value === "lpr" ? "lpr" : null;
+        await axios.put("config/set", {
+          requires_restart: 1,
+          config_data: {
+            cameras: {
+              [camera]: {
+                type: typeValue,
+              },
+            },
+          },
+        });
+        await onConfigChanged();
+
+        setLocalOverrides((prev) => ({
+          ...prev,
+          [camera]: value,
+        }));
+
+        toast.success(
+          t("cameraManagement.cameraType.saveSuccess", {
+            ns: "views/settings",
+            cameraName: camera,
+          }),
+          {
+            position: "top-center",
+            action: (
+              <a onClick={() => setRestartDialogOpen(true)}>
+                <Button>
+                  {t("restart.button", { ns: "components/dialog" })}
+                </Button>
+              </a>
+            ),
+          },
+        );
+      } catch (error) {
+        const errorMessage =
+          axios.isAxiosError(error) &&
+          (error.response?.data?.message || error.response?.data?.detail)
+            ? error.response?.data?.message || error.response?.data?.detail
+            : t("toast.save.error.noMessage", { ns: "common" });
+
+        toast.error(
+          t("toast.save.error.title", { errorMessage, ns: "common" }),
+          { position: "top-center" },
+        );
+      } finally {
+        setSavingCamera(null);
+      }
+    },
+    [onConfigChanged, setRestartDialogOpen, t],
+  );
+
+  const getCameraType = useCallback(
+    (camera: string): string => {
+      const localValue = localOverrides[camera];
+      if (localValue) return localValue;
+
+      const type = config?.cameras?.[camera]?.type;
+      return type === "lpr" ? "lpr" : "normal";
+    },
+    [config, localOverrides],
+  );
+
+  return (
+    <SettingsGroupCard
+      title={t("cameraManagement.cameraType.title", {
+        ns: "views/settings",
+      })}
+    >
+      <div className={SPLIT_ROW_CLASS_NAME}>
+        <div className="space-y-1.5">
+          <Label>
+            {t("cameraManagement.cameraType.label", {
+              ns: "views/settings",
+            })}
+            <RestartRequiredIndicator className="ml-1" />
+          </Label>
+          <p className="hidden text-sm text-muted-foreground md:block">
+            {t("cameraManagement.cameraType.description", {
+              ns: "views/settings",
+            })}
+          </p>
+          <div className="hidden items-center text-sm text-primary md:flex">
+            <Link
+              to={getLocaleDocUrl(
+                "configuration/license_plate_recognition#dedicated-lpr-cameras",
+              )}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline"
+            >
+              {t("readTheDocumentation", { ns: "common" })}
+              <LuExternalLink className="ml-2 inline-flex size-3" />
+            </Link>
+          </div>
+        </div>
+        <div className={`${CONTROL_COLUMN_CLASS_NAME} space-y-1.5`}>
+          <div className="max-w-md space-y-2 rounded-lg bg-secondary p-4">
+            {cameras.map((camera) => {
+              const currentType = getCameraType(camera);
+              const isSaving = savingCamera === camera;
+
+              return (
+                <div
+                  key={camera}
+                  className="flex flex-row items-center justify-between"
+                >
+                  <CameraNameLabel camera={camera} />
+                  {isSaving ? (
+                    <ActivityIndicator className="h-5 w-20" size={16} />
+                  ) : (
+                    <Select
+                      value={currentType}
+                      onValueChange={(v) => handleTypeChange(camera, v)}
+                    >
+                      <SelectTrigger className="h-7 w-full max-w-[140px] text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="normal">
+                          {t("cameraManagement.cameraType.normal", {
+                            ns: "views/settings",
+                          })}
+                        </SelectItem>
+                        <SelectItem value="lpr">
+                          {t("cameraManagement.cameraType.dedicatedLpr", {
+                            ns: "views/settings",
+                          })}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-sm text-muted-foreground md:hidden">
+            {t("cameraManagement.cameraType.description", {
+              ns: "views/settings",
+            })}
+          </p>
+          <div className="flex items-center text-sm text-primary md:hidden">
+            <Link
+              to={getLocaleDocUrl(
+                "configuration/license_plate_recognition#dedicated-lpr-cameras",
+              )}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline"
+            >
+              {t("readTheDocumentation", { ns: "common" })}
+              <LuExternalLink className="ml-2 inline-flex size-3" />
+            </Link>
+          </div>
+        </div>
+      </div>
+    </SettingsGroupCard>
   );
 }
 

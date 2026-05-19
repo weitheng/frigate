@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { HiDotsHorizontal } from "react-icons/hi";
 import { useApiHost } from "@/api";
+import { baseUrl } from "@/api/baseUrl";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Event } from "@/types/event";
@@ -53,10 +54,6 @@ export default function EventMenu({
   const handleDebugReplay = useCallback(
     (event: Event) => {
       setIsStarting(true);
-      const toastId = toast.loading(
-        t("dialog.starting", { ns: "views/replay" }),
-        { position: "top-center" },
-      );
 
       axios
         .post("debug_replay/start", {
@@ -65,11 +62,7 @@ export default function EventMenu({
           end_time: event.end_time,
         })
         .then((response) => {
-          if (response.status === 200) {
-            toast.success(t("dialog.toast.success", { ns: "views/replay" }), {
-              id: toastId,
-              position: "top-center",
-            });
+          if (response.status === 202 || response.status === 200) {
             navigate("/replay");
           }
         })
@@ -83,12 +76,15 @@ export default function EventMenu({
             toast.error(
               t("dialog.toast.alreadyActive", { ns: "views/replay" }),
               {
-                id: toastId,
                 position: "top-center",
                 closeButton: true,
                 dismissible: false,
                 action: (
-                  <a href="/replay" target="_blank" rel="noopener noreferrer">
+                  <a
+                    href={`${baseUrl}replay`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
                     <Button>
                       {t("dialog.toast.goToReplay", { ns: "views/replay" })}
                     </Button>
@@ -98,7 +94,6 @@ export default function EventMenu({
             );
           } else {
             toast.error(t("dialog.toast.error", { error: errorMessage }), {
-              id: toastId,
               position: "top-center",
             });
           }

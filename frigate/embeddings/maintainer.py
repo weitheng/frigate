@@ -60,7 +60,11 @@ from frigate.data_processing.real_time.license_plate import (
 )
 from frigate.data_processing.types import DataProcessorMetrics, PostProcessDataEnum
 from frigate.db.sqlitevecq import SqliteVecQueueDatabase
-from frigate.events.types import EventTypeEnum, RegenerateDescriptionEnum
+from frigate.events.types import (
+    EventStateEnum,
+    EventTypeEnum,
+    RegenerateDescriptionEnum,
+)
 from frigate.genai import GenAIClientManager
 from frigate.models import Event, Recordings, ReviewSegment, Trigger
 from frigate.types import TrackedObjectUpdateTypesEnum
@@ -228,7 +232,7 @@ class EmbeddingMaintainer(threading.Thread):
                 )
             )
 
-        if self.config.audio_transcription.enabled and any(
+        if any(
             c.enabled_in_config and c.audio_transcription.enabled
             for c in self.config.cameras.values()
         ):
@@ -435,7 +439,7 @@ class EmbeddingMaintainer(threading.Thread):
         if update is None:
             return
 
-        source_type, _, camera, frame_name, data = update
+        source_type, event_type, camera, frame_name, data = update
 
         logger.debug(
             f"Received update - source_type: {source_type}, camera: {camera}, data label: {data.get('label') if data else 'None'}"
@@ -485,6 +489,12 @@ class EmbeddingMaintainer(threading.Thread):
 
         for processor in self.post_processors:
             if isinstance(processor, ObjectDescriptionProcessor):
+                # skip end events — _process_finalized handles them via event_end_subscriber.
+                # processing them here can re-create tracked_events entries after cleanup
+                # when the event_subscriber queue is backlogged behind event_end_subscriber.
+                if event_type == EventStateEnum.end:
+                    continue
+
                 processor.process_data(
                     {
                         "camera": camera,

@@ -79,7 +79,11 @@ def is_openvino_gpu_npu_available() -> bool:
     available_devices = get_openvino_available_devices()
     # Check for GPU, NPU, or other acceleration devices (excluding CPU)
     acceleration_devices = ["GPU", "MYRIAD", "NPU", "GNA", "HDDL"]
-    return any(device in available_devices for device in acceleration_devices)
+    return any(
+        avail_dev == accel_dev or avail_dev.startswith(accel_dev + ".")
+        for avail_dev in available_devices
+        for accel_dev in acceleration_devices
+    )
 
 
 class BaseModelRunner(ABC):
@@ -132,7 +136,6 @@ class ONNXModelRunner(BaseModelRunner):
         return model_type in [
             EnrichmentModelTypeEnum.paddleocr.value,
             EnrichmentModelTypeEnum.jina_v2.value,
-            EnrichmentModelTypeEnum.arcface.value,
             ModelTypeEnum.rfdetr.value,
             ModelTypeEnum.dfine.value,
         ]
@@ -279,6 +282,13 @@ class OpenVINOModelRunner(BaseModelRunner):
             EnrichmentModelTypeEnum.arcface.value,
         ]
 
+    @staticmethod
+    def is_detection_model(model_type: str) -> bool:
+        # Import here to avoid circular imports
+        from frigate.detectors.detector_config import ModelTypeEnum
+
+        return model_type in [m.value for m in ModelTypeEnum]
+
     def __init__(self, model_path: str, device: str, model_type: str, **kwargs):
         self.model_path = model_path
         self.device = device
@@ -307,8 +317,14 @@ class OpenVINOModelRunner(BaseModelRunner):
         # Apply performance optimization
         self.ov_core.set_property(device, {"PERF_COUNT": "NO"})
 
-        if device in ["GPU", "AUTO"]:
+        if device in ["GPU", "AUTO", "NPU"]:
             self.ov_core.set_property(device, {"PERFORMANCE_HINT": "LATENCY"})
+
+        if device == "NPU" and OpenVINOModelRunner.is_detection_model(model_type):
+            try:
+                self.ov_core.set_property(device, {"NPU_TURBO": "YES"})
+            except Exception as e:
+                logger.debug(f"NPU_TURBO not supported by driver: {e}")
 
         # Compile model
         self.compiled_model = self.ov_core.compile_model(

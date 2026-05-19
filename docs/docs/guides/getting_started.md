@@ -192,7 +192,7 @@ cameras:
 
 ### Step 4: Configure detectors
 
-By default, Frigate will use a single CPU detector.
+By default, Frigate will use a single OpenVINO detector running on the CPU.
 
 In many cases, the integrated graphics on Intel CPUs provides sufficient performance for typical Frigate setups. If you have an Intel processor, you can follow the configuration below.
 
@@ -204,8 +204,8 @@ You need to refer to **Configure hardware acceleration** above to enable the con
 <ConfigTabs>
 <TabItem value="ui">
 
-1. Navigate to <NavPath path="Settings > System > Detector hardware" /> and add a detector with **Type** `OpenVINO` and **Device** `GPU`
-2. Navigate to <NavPath path="Settings > System > Detection model" /> and configure the model settings for OpenVINO:
+1. Navigate to <NavPath path="Settings > System > Detectors and model" /> and add a detector with **Type** `OpenVINO` and **Device** `GPU`
+2. On the same page, in the **Custom Model** tab, configure the model settings for OpenVINO:
 
 | Field                                    | Value                                      |
 | ---------------------------------------- | ------------------------------------------ |
@@ -273,7 +273,7 @@ services:
 <ConfigTabs>
 <TabItem value="ui">
 
-Navigate to <NavPath path="Settings > System > Detector hardware" /> and add a detector with **Type** `EdgeTPU` and **Device** `usb`.
+Navigate to <NavPath path="Settings > System > Detectors and model" /> and add a detector with **Type** `EdgeTPU` and **Device** `usb`.
 
 </TabItem>
 <TabItem value="yaml">
