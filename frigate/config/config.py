@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -25,7 +26,6 @@ from frigate.plus import PlusApi
 from frigate.util.builtin import (
     deep_merge,
     get_ffmpeg_arg_list,
-    load_labels,
 )
 from frigate.util.config import (
     CURRENT_CONFIG_VERSION,
@@ -80,16 +80,40 @@ logger = logging.getLogger(__name__)
 
 yaml = YAML()
 
+# Pydantic field default applied when an existing config omits `detectors:`.
+# Kept as cpu tflite for backwards compatibility with 0.17 configs.
+DEFAULT_DETECTORS = {"cpu": {"type": "cpu"}}
+
+# Used by the openvino branch below and rendered into the new-config YAML
+# template so first-time setups default to openvino on CPU.
+DEFAULT_MODEL = {
+    "width": 300,
+    "height": 300,
+    "input_tensor": "nhwc",
+    "input_pixel_format": "bgr",
+    "path": "/openvino-model/ssdlite_mobilenet_v2.xml",
+    "labelmap_path": "/openvino-model/coco_91cl_bkgr.txt",
+}
+NEW_CONFIG_DETECTORS = {"ov": {"type": "openvino", "device": "CPU"}}
+DEFAULT_DETECT_DIMENSIONS = {"width": 1280, "height": 720}
+
+
+def _render_default_yaml(data: dict) -> str:
+    buf = io.StringIO()
+    _yaml_writer = YAML()
+    _yaml_writer.indent(mapping=2, sequence=4, offset=2)
+    _yaml_writer.dump(data, buf)
+    return buf.getvalue()
+
+
 DEFAULT_CONFIG = f"""
 mqtt:
   enabled: False
 
+{_render_default_yaml({"detectors": NEW_CONFIG_DETECTORS, "model": DEFAULT_MODEL})}
 cameras: {{}}  # No cameras defined, UI wizard should be used
 version: {CURRENT_CONFIG_VERSION}
 """
-
-DEFAULT_DETECTORS = {"cpu": {"type": "cpu"}}
-DEFAULT_DETECT_DIMENSIONS = {"width": 1280, "height": 720}
 
 # stream info handler
 stream_info_retriever = StreamInfoRetriever()
@@ -302,6 +326,47 @@ def verify_required_zones_exist(camera_config: CameraConfig) -> None:
             )
 
 
+def verify_profile_overrides_match_base(camera_config: CameraConfig) -> None:
+    """Verify that profile zone and mask IDs reference entries defined on the base camera."""
+    for profile_name, profile in camera_config.profiles.items():
+        if profile.zones:
+            for zone_name in profile.zones:
+                if zone_name not in camera_config.zones:
+                    raise ValueError(
+                        f"Camera '{camera_config.name}' profile '{profile_name}' defines "
+                        f"zone '{zone_name}' that does not exist on the base config"
+                    )
+
+        if profile.motion and profile.motion.mask:
+            for mask_name in profile.motion.mask:
+                if mask_name not in camera_config.motion.mask:
+                    raise ValueError(
+                        f"Camera '{camera_config.name}' profile '{profile_name}' defines "
+                        f"motion mask '{mask_name}' that does not exist on the base config"
+                    )
+
+        if profile.objects:
+            for mask_name in profile.objects.mask or {}:
+                if mask_name not in (camera_config.objects.mask or {}):
+                    raise ValueError(
+                        f"Camera '{camera_config.name}' profile '{profile_name}' defines "
+                        f"object mask '{mask_name}' that does not exist on the base config"
+                    )
+            for label, filter_config in (profile.objects.filters or {}).items():
+                base_filter = (camera_config.objects.filters or {}).get(label)
+                profile_filter_masks = (
+                    filter_config.mask if filter_config else None
+                ) or {}
+                base_filter_masks = (base_filter.mask if base_filter else None) or {}
+                for mask_name in profile_filter_masks:
+                    if mask_name not in base_filter_masks:
+                        raise ValueError(
+                            f"Camera '{camera_config.name}' profile '{profile_name}' defines "
+                            f"object mask '{mask_name}' for '{label}' that does not exist "
+                            f"on the base config"
+                        )
+
+
 def verify_autotrack_zones(camera_config: CameraConfig) -> ValueError | None:
     """Verify that required_zones are specified when autotracking is enabled."""
     if (
@@ -453,7 +518,7 @@ class FrigateConfig(FrigateBaseModel):
     cameras: Dict[str, CameraConfig] = Field(title="Cameras", description="Cameras")
     audio: AudioConfig = Field(
         default_factory=AudioConfig,
-        title="Audio events",
+        title="Audio detection",
         description="Settings for audio-based event detection for all cameras; can be overridden per-camera.",
     )
     birdseye: BirdseyeConfig = Field(
@@ -605,26 +670,29 @@ class FrigateConfig(FrigateBaseModel):
 
         # set default min_score for object attributes
         for attribute in self.model.all_attributes:
-            if not self.objects.filters.get(attribute):
+            existing = self.objects.filters.get(attribute)
+            if existing is None:
                 self.objects.filters[attribute] = FilterConfig(min_score=0.7)
-            elif self.objects.filters[attribute].min_score == 0.5:
-                self.objects.filters[attribute].min_score = 0.7
+            elif "min_score" not in existing.model_fields_set:
+                existing.min_score = 0.7
 
         # auto detect hwaccel args
         if self.ffmpeg.hwaccel_args == "auto":
             self.ffmpeg.hwaccel_args = auto_detect_hwaccel()
 
-        # Populate global audio filters for all audio labels
-        all_audio_labels = {
-            label
-            for label in load_labels("/audio-labelmap.txt", prefill=521).values()
-            if label
-        }
+        # Resolve global export hwaccel_args so it matches the per-camera
+        # resolution below. Without this, every camera reads as overriding
+        # record.export.hwaccel_args because the global stays "auto" while
+        # the camera value gets resolved to the actual args list.
+        if self.record.export.hwaccel_args == "auto":
+            self.record.export.hwaccel_args = self.ffmpeg.hwaccel_args
 
+        # Populate global audio filters from listen. Existing user-defined
+        # entries for labels not in listen are preserved but unused at runtime.
         if self.audio.filters is None:
             self.audio.filters = {}
 
-        for key in sorted(all_audio_labels - self.audio.filters.keys()):
+        for key in sorted(set(self.audio.listen) - self.audio.filters.keys()):
             self.audio.filters[key] = AudioFilterConfig()
 
         self.audio.filters = dict(sorted(self.audio.filters.items()))
@@ -679,6 +747,9 @@ class FrigateConfig(FrigateBaseModel):
                     model_config["path"] = "/cpu_model.tflite"
                 elif detector_config.type == "edgetpu":
                     model_config["path"] = "/edgetpu_model.tflite"
+                elif detector_config.type == "openvino":
+                    for default_key, default_value in DEFAULT_MODEL.items():
+                        model_config.setdefault(default_key, default_value)
 
             model = ModelConfig.model_validate(model_config)
             model.check_and_load_plus_model(self.plus_api, detector_config.type)
@@ -813,7 +884,9 @@ class FrigateConfig(FrigateBaseModel):
             if camera_config.audio.filters is None:
                 camera_config.audio.filters = {}
 
-            for key in sorted(all_audio_labels - camera_config.audio.filters.keys()):
+            for key in sorted(
+                set(camera_config.audio.listen) - camera_config.audio.filters.keys()
+            ):
                 camera_config.audio.filters[key] = AudioFilterConfig()
 
             camera_config.audio.filters = dict(
@@ -835,7 +908,9 @@ class FrigateConfig(FrigateBaseModel):
                     if mask_config:
                         coords = mask_config.coordinates
                         relative_coords = get_relative_coordinates(
-                            coords, camera_config.frame_shape
+                            coords,
+                            camera_config.frame_shape,
+                            camera_name=camera_config.name,
                         )
                         # Create a new ObjectMaskConfig with raw_coordinates set
                         processed_global_masks[mask_id] = ObjectMaskConfig(
@@ -925,6 +1000,7 @@ class FrigateConfig(FrigateBaseModel):
             verify_recording_segments_setup_with_reasonable_time(camera_config)
             verify_zone_objects_are_tracked(camera_config)
             verify_required_zones_exist(camera_config)
+            verify_profile_overrides_match_base(camera_config)
             verify_autotrack_zones(camera_config)
             verify_motion_and_detect(camera_config)
             verify_objects_track(camera_config, labelmap_objects)

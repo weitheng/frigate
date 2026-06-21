@@ -5,6 +5,7 @@ import {
   CaseCard,
   ExportCard,
 } from "@/components/card/ExportCard";
+import ActivityIndicator from "@/components/indicators/activity-indicator";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -607,7 +608,6 @@ function Exports() {
               {t("button.cancel", { ns: "common" })}
             </AlertDialogCancel>
             <Button
-              className="text-white"
               aria-label="Delete Export"
               variant="destructive"
               onClick={() => onHandleDelete()}
@@ -657,7 +657,6 @@ function Exports() {
               {t("button.cancel", { ns: "common" })}
             </AlertDialogCancel>
             <Button
-              className="text-white"
               variant="destructive"
               onClick={() => void handleDeleteCase()}
             >
@@ -743,7 +742,7 @@ function Exports() {
                 </Button>
               )}
               <Input
-                className="text-md w-full bg-muted md:w-1/2"
+                className="w-full bg-muted md:w-1/2"
                 placeholder={t("search")}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -864,6 +863,7 @@ function Exports() {
           search={search}
           selectedExports={selectedExports}
           selectionMode={selectionMode}
+          isLoading={cases === undefined || rawExports === undefined}
           onSelectExport={onSelectExport}
           setSelected={setSelected}
           renameClip={onHandleRename}
@@ -882,6 +882,7 @@ function Exports() {
           activeJobs={activeJobsByCase["none"] || []}
           selectedExports={selectedExports}
           selectionMode={selectionMode}
+          isLoading={cases === undefined || rawExports === undefined}
           onSelectExport={onSelectExport}
           setSelectedCaseId={setSelectedCaseId}
           setSelected={setSelected}
@@ -903,6 +904,7 @@ type AllExportsViewProps = {
   activeJobs: ExportJob[];
   selectedExports: Export[];
   selectionMode: boolean;
+  isLoading: boolean;
   onSelectExport: (e: Export) => void;
   setSelectedCaseId: (id: string) => void;
   setSelected: (e: Export) => void;
@@ -919,6 +921,7 @@ function AllExportsView({
   activeJobs,
   selectedExports,
   selectionMode,
+  isLoading,
   onSelectExport,
   setSelectedCaseId,
   setSelected,
@@ -1027,6 +1030,8 @@ function AllExportsView({
             </div>
           )}
         </div>
+      ) : isLoading ? (
+        <ActivityIndicator className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2" />
       ) : (
         <div className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center text-center">
           <LuFolderX className="size-16" />
@@ -1046,6 +1051,7 @@ type CaseViewProps = {
   search: string;
   selectedExports: Export[];
   selectionMode: boolean;
+  isLoading: boolean;
   onSelectExport: (e: Export) => void;
   setSelected: (e: Export) => void;
   renameClip: (id: string, update: string) => void;
@@ -1063,6 +1069,7 @@ function CaseView({
   search,
   selectedExports,
   selectionMode,
+  isLoading,
   onSelectExport,
   setSelected,
   renameClip,
@@ -1201,6 +1208,10 @@ function CaseView({
             />
           ))}
         </div>
+      ) : isLoading ? (
+        <div className="flex min-h-[16rem] flex-1 items-center justify-center">
+          <ActivityIndicator />
+        </div>
       ) : (
         <div className="flex min-h-[16rem] flex-col items-center justify-center p-6 text-center">
           <LuFolderX className="size-12" />
@@ -1264,8 +1275,8 @@ function CaseEditorDialog({
             value={description}
             onChange={(event) => setDescription(event.target.value)}
           />
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={onClose}>
+          <DialogFooter>
+            <Button onClick={onClose}>
               {t("button.cancel", { ns: "common" })}
             </Button>
             <Button
@@ -1282,7 +1293,7 @@ function CaseEditorDialog({
                 ? t("button.save", { ns: "common" })
                 : t("toolbar.newCase")}
             </Button>
-          </div>
+          </DialogFooter>
         </div>
       </DialogContent>
     </Dialog>
@@ -1414,13 +1425,12 @@ function CaseAddExportDialog({
             )}
           </div>
         </div>
-        <DialogFooter className="flex-row justify-end gap-2">
-          <Button variant="outline" size="sm" onClick={onClose}>
+        <DialogFooter>
+          <Button onClick={onClose}>
             {t("button.cancel", { ns: "common" })}
           </Button>
           <Button
             variant="select"
-            size="sm"
             disabled={selectedIds.length === 0 || isAdding}
             onClick={() => void handleAdd()}
           >

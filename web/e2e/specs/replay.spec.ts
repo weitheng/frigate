@@ -31,7 +31,7 @@ test.describe("Replay — no active session @medium", () => {
     await expect(
       frigateApp.page.getByRole("heading", {
         level: 2,
-        name: /No Active Replay Session/i,
+        name: /No Active Debug Replay Session/i,
       }),
     ).toBeVisible({ timeout: 10_000 });
     const goButton = frigateApp.page.getByRole("button", {
@@ -48,7 +48,7 @@ test.describe("Replay — no active session @medium", () => {
     await expect(
       frigateApp.page.getByRole("heading", {
         level: 2,
-        name: /No Active Replay Session/i,
+        name: /No Active Debug Replay Session/i,
       }),
     ).toBeVisible({ timeout: 10_000 });
     await frigateApp.page
@@ -129,8 +129,14 @@ test.describe("Replay — active session @medium", () => {
     );
     await actionGroup.first().click();
 
-    const dialog = frigateApp.page.getByRole("dialog");
-    await expect(dialog).toBeVisible({ timeout: 5_000 });
+    // On mobile PlatformAwareSheet renders a MobilePage (full-screen panel)
+    // instead of a Radix Dialog, so assert the panel title heading is visible.
+    await expect(
+      frigateApp.page.getByRole("heading", {
+        level: 2,
+        name: /^Configuration$/i,
+      }),
+    ).toBeVisible({ timeout: 5_000 });
   });
 
   test("Objects tab renders with the camera_activity objects list", async ({
@@ -297,7 +303,7 @@ test.describe("Replay — mobile @medium @mobile", () => {
     await expect(
       frigateApp.page.getByRole("heading", {
         level: 2,
-        name: /No Active Replay Session/i,
+        name: /No Active Debug Replay Session/i,
       }),
     ).toBeVisible({ timeout: 10_000 });
   });

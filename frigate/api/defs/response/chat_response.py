@@ -20,6 +20,10 @@ class ChatMessageResponse(BaseModel):
     content: Optional[str] = Field(
         default=None, description="Message content (None if tool calls present)"
     )
+    reasoning: Optional[str] = Field(
+        default=None,
+        description="Separated reasoning/thinking trace if the model emitted one",
+    )
     tool_calls: Optional[list[ToolCallInvocation]] = Field(
         default=None, description="Tool calls if LLM wants to call tools"
     )
@@ -51,4 +55,13 @@ class ChatCompletionResponse(BaseModel):
     tool_calls: list[ToolCall] = Field(
         default_factory=list,
         description="List of tool calls that were executed during this completion",
+    )
+    messages: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "The full conversation chain, including the system message. Persist "
+            "and replay this verbatim on the next request so the prompt prefix "
+            "stays byte-identical and the model server's prompt cache keeps "
+            "hitting."
+        ),
     )

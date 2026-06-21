@@ -150,29 +150,51 @@ def extract_translations_from_schema(
             # Handle anyOf cases
             elif "anyOf" in field_schema:
                 for item in field_schema["anyOf"]:
+                    nested = None
+                    if item.get("type") == "null":
+                        continue
                     if "properties" in item:
                         nested = extract_translations_from_schema(item, defs=defs)
+                    elif "$ref" in item:
+                        ref_path = item["$ref"]
+                        if ref_path.startswith("#/$defs/"):
+                            ref_name = ref_path.split("/")[-1]
+                            if ref_name in defs:
+                                nested = extract_translations_from_schema(
+                                    defs[ref_name], defs=defs
+                                )
+                    elif (
+                        "additionalProperties" in item
+                        and isinstance(item["additionalProperties"], dict)
+                        and "$ref" in item["additionalProperties"]
+                    ):
+                        ref_path = item["additionalProperties"]["$ref"]
+                        if ref_path.startswith("#/$defs/"):
+                            ref_name = ref_path.split("/")[-1]
+                            if ref_name in defs:
+                                nested = extract_translations_from_schema(
+                                    defs[ref_name], defs=defs
+                                )
+                    elif (
+                        "items" in item
+                        and isinstance(item["items"], dict)
+                        and ("$ref" in item["items"])
+                    ):
+                        ref_path = item["items"]["$ref"]
+                        if ref_path.startswith("#/$defs/"):
+                            ref_name = ref_path.split("/")[-1]
+                            if ref_name in defs:
+                                nested = extract_translations_from_schema(
+                                    defs[ref_name], defs=defs
+                                )
+
+                    if nested:
                         nested_without_root = {
                             k: v
                             for k, v in nested.items()
                             if k not in ("label", "description")
                         }
                         field_translations.update(nested_without_root)
-                    elif "$ref" in item:
-                        ref_path = item["$ref"]
-                        if ref_path.startswith("#/$defs/"):
-                            ref_name = ref_path.split("/")[-1]
-                            if ref_name in defs:
-                                ref_schema = defs[ref_name]
-                                nested = extract_translations_from_schema(
-                                    ref_schema, defs=defs
-                                )
-                                nested_without_root = {
-                                    k: v
-                                    for k, v in nested.items()
-                                    if k not in ("label", "description")
-                                }
-                                field_translations.update(nested_without_root)
 
         if field_translations:
             translations[field_name] = field_translations
@@ -341,6 +363,64 @@ def main():
                 if key == "type":
                     continue
                 section_data.pop(key, None)
+
+        if field_name == "objects":
+            # Produce a parallel `filters_attribute` block alongside `filters`,
+            # with object-wording rewritten for attribute filters (face,
+            # license_plate, courier logos). The frontend's
+            # buildTranslationPath routes `filters.<attr>.<field>` lookups to
+            # `filters_attribute.<field>` when `<attr>` is in
+            # `model.all_attributes`. Keep this rewrite list explicit rather
+            # than running a blanket s/object/attribute/ so unrelated
+            # descriptions (e.g. "JSON object") never accidentally flip.
+            filters_block = section_data.get("filters")
+            if isinstance(filters_block, dict):
+                attribute_rewrites = [
+                    ("Object filters", "Attribute filters"),
+                    ("detected objects", "detected attributes"),
+                    ("object area", "attribute area"),
+                    ("object type", "attribute"),
+                    ("the object", "the attribute"),
+                ]
+
+                # Per-field overrides for cases where the generic rewrite
+                # doesn't capture the attribute-specific semantics. Keys
+                # match the FilterConfig field name; values are partial
+                # overrides applied AFTER the generic rewrites.
+                attribute_field_overrides: Dict[str, Dict[str, str]] = {
+                    "min_score": {
+                        "description": (
+                            "Minimum single-frame detection confidence required "
+                            "to associate this attribute with its parent object."
+                        ),
+                    },
+                }
+
+                def rewrite(text: str) -> str:
+                    for source, replacement in attribute_rewrites:
+                        text = text.replace(source, replacement)
+                    return text
+
+                attribute_variant: Dict[str, Any] = {}
+                for key, value in filters_block.items():
+                    if key in ("label", "description"):
+                        if isinstance(value, str):
+                            attribute_variant[key] = rewrite(value)
+                        continue
+                    if not isinstance(value, dict):
+                        continue
+                    field_trans: Dict[str, str] = {}
+                    if isinstance(value.get("label"), str):
+                        field_trans["label"] = rewrite(value["label"])
+                    if isinstance(value.get("description"), str):
+                        field_trans["description"] = rewrite(value["description"])
+                    overrides = attribute_field_overrides.get(key)
+                    if overrides:
+                        field_trans.update(overrides)
+                    if field_trans:
+                        attribute_variant[key] = field_trans
+                if attribute_variant:
+                    section_data["filters_attribute"] = attribute_variant
 
         if not section_data:
             logger.warning(f"No translations found for section: {field_name}")

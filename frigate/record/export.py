@@ -23,13 +23,13 @@ from frigate.const import (
     EXPORT_DIR,
     MAX_PLAYLIST_SECONDS,
     PREVIEW_FRAME_TYPE,
-    PROCESS_PRIORITY_LOW,
 )
 from frigate.ffmpeg_presets import (
     EncodeTypeEnum,
     parse_preset_hardware_acceleration_encode,
 )
 from frigate.models import Export, Previews, Recordings, ReviewSegment
+from frigate.util.ffmpeg import run_ffmpeg_with_progress
 from frigate.util.time import is_current_hour
 
 logger = logging.getLogger(__name__)
@@ -42,33 +42,118 @@ TIMELAPSE_DATA_INPUT_ARGS = "-an -skip_frame nokey"
 # Captures the floating-point factor so we can scale expected duration.
 SETPTS_FACTOR_RE = re.compile(r"setpts=([0-9]*\.?[0-9]+)\*PTS")
 
-# ffmpeg flags that can read from or write to arbitrary files
-BLOCKED_FFMPEG_ARGS = frozenset(
+# Allowlisted flags that take no value.
+_VALUELESS_FLAGS = frozenset({"-an", "-sn", "-dn"})
+
+# Allowlisted filter flags. Their value is validated as a filtergraph and may
+# only reference filters in _SAFE_FILTERS.
+_FILTER_FLAGS = frozenset({"-vf", "-af", "-filter"})
+
+# Allowlisted flags that take exactly one value (encoder / muxer-safe options).
+_VALUE_FLAGS = frozenset(
     {
-        "-i",
-        "-filter_script",
-        "-filter_complex",
-        "-lavfi",
-        "-vf",
-        "-af",
-        "-filter",
-        "-vstats_file",
-        "-passlogfile",
-        "-sdp_file",
-        "-dump_attachment",
-        "-attach",
+        "-c",
+        "-codec",
+        "-b",
+        "-crf",
+        "-qp",
+        "-q",
+        "-qscale",
+        "-preset",
+        "-tune",
+        "-profile",
+        "-level",
+        "-pix_fmt",
+        "-r",
+        "-g",
+        "-keyint_min",
+        "-sc_threshold",
+        "-bf",
+        "-refs",
+        "-qmin",
+        "-qmax",
+        "-maxrate",
+        "-minrate",
+        "-bufsize",
+        "-movflags",
+        "-threads",
+        "-aspect",
+        "-fps_mode",
+        "-vsync",
+        "-skip_frame",
     }
 )
 
+_ALLOWED_FLAGS = _VALUELESS_FLAGS | _FILTER_FLAGS | _VALUE_FLAGS
+
+# Filters that cannot read files, load plugins, or open network sources.
+_SAFE_FILTERS = frozenset(
+    {
+        "setpts",
+        "fps",
+        "scale",
+        "format",
+        "transpose",
+        "hflip",
+        "vflip",
+        "crop",
+        "pad",
+        "setsar",
+        "setdar",
+    }
+)
+
+# Conservative shape for a non-filter flag value. Excludes "/" (paths /
+# filtergraph division), whitespace, brackets, and a leading "-" so a value
+# can never be a path or swallow a following flag. ":" is permitted for values
+# like "16:9".
+_SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:+][A-Za-z0-9_.:+-]*$")
+
+# Substrings inside a filtergraph that indicate a file-reading filter option.
+# "movie=" also matches "amovie=" as a substring.
+_BLOCKED_FILTER_VALUE_MARKERS = ("movie=", "textfile=", "filename=", "fontfile=")
+
+
+def _base_flag(token: str) -> str:
+    """Return a flag's base name, lowercased and without its stream specifier.
+
+    e.g. "-c:v" -> "-c", "-filter:a:0" -> "-filter".
+    """
+    return token.lower().split(":", 1)[0]
+
+
+def _validate_filtergraph(value: str) -> tuple[bool, str]:
+    """Validate a filtergraph value, allowing only filters in _SAFE_FILTERS."""
+    # None of the safe filters need any of these
+    if any(token in value for token in ("://", "..", "[", "]")):
+        return False, "Invalid filter graph in custom ffmpeg arguments"
+
+    lowered = value.lower()
+    if any(marker in lowered for marker in _BLOCKED_FILTER_VALUE_MARKERS):
+        return False, "File-reading filters are not allowed in custom ffmpeg arguments"
+
+    # Filters are separated by "," within a chain and ";" between chains. Safe
+    # filters never use unescaped "," or ";" in their arguments, so splitting on
+    # them to recover filter names cannot hide a disallowed filter.
+    for spec in re.split(r"[;,]", value):
+        spec = spec.strip()
+        if not spec:
+            continue
+
+        name = spec.split("=", 1)[0].strip().lower()
+        if name not in _SAFE_FILTERS:
+            return False, f"Filter not allowed in custom ffmpeg arguments: {name}"
+
+    return True, ""
+
 
 def validate_ffmpeg_args(args: str) -> tuple[bool, str]:
-    """Validate that user-provided ffmpeg args don't allow input/output injection.
+    """Validate user-provided custom export ffmpeg args with an allowlist.
 
-    Blocks:
-    - The -i flag and other flags that read/write arbitrary files
-    - Filter flags (can read files via movie=/amovie= source filters)
-    - Absolute/relative file paths (potential extra outputs)
-    - URLs and ffmpeg protocol references (data exfiltration)
+    Every token must be an allowlisted flag or the value of one; filter values
+    may only reference safe filters; and no token may become a bare input or
+    output URL. This structurally prevents arbitrary file read/write, network
+    exfiltration/SSRF, and resource-exhaustion via the export endpoint.
 
     Admin users skip this validation entirely since they are trusted.
     """
@@ -76,26 +161,36 @@ def validate_ffmpeg_args(args: str) -> tuple[bool, str]:
         return True, ""
 
     tokens = args.split()
-    for token in tokens:
-        # Block flags that could inject inputs or write to arbitrary files
-        if token.lower() in BLOCKED_FFMPEG_ARGS:
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+
+        # A bare (non-flag) token here would be parsed by ffmpeg as an input or
+        # output URL. Only the server sets inputs/outputs, never the user.
+        if not token.startswith("-"):
+            return False, f"Unexpected argument in custom ffmpeg arguments: {token}"
+
+        base = _base_flag(token)
+        if base not in _ALLOWED_FLAGS:
             return False, f"Forbidden ffmpeg argument: {token}"
 
-        # Block tokens that look like file paths (potential output injection)
-        if (
-            token.startswith("/")
-            or token.startswith("./")
-            or token.startswith("../")
-            or token.startswith("~")
-        ):
-            return False, "File paths are not allowed in custom ffmpeg arguments"
+        if base in _VALUELESS_FLAGS:
+            i += 1
+            continue
 
-        # Block URLs and ffmpeg protocol references (e.g. http://, tcp://, pipe:, file:)
-        if "://" in token or token.startswith("pipe:") or token.startswith("file:"):
-            return (
-                False,
-                "Protocol references are not allowed in custom ffmpeg arguments",
-            )
+        # Remaining flags consume exactly one value.
+        if i + 1 >= len(tokens):
+            return False, f"Missing value for ffmpeg argument: {token}"
+
+        value = tokens[i + 1]
+        if base in _FILTER_FLAGS:
+            valid, message = _validate_filtergraph(value)
+            if not valid:
+                return False, message
+        elif not _SAFE_VALUE_RE.match(value):
+            return False, f"Invalid value for {token}: {value}"
+
+        i += 2
 
     return True, ""
 
@@ -243,106 +338,28 @@ class RecordingExporter(threading.Thread):
 
         return total
 
-    def _inject_progress_flags(self, ffmpeg_cmd: list[str]) -> list[str]:
-        """Insert FFmpeg progress reporting flags before the output path.
-
-        ``-progress pipe:2`` writes structured key=value lines to stderr,
-        ``-nostats`` suppresses the noisy default stats output.
-        """
-        if not ffmpeg_cmd:
-            return ffmpeg_cmd
-        return ffmpeg_cmd[:-1] + ["-progress", "pipe:2", "-nostats", ffmpeg_cmd[-1]]
-
     def _run_ffmpeg_with_progress(
         self,
         ffmpeg_cmd: list[str],
         playlist_lines: str | list[str],
         step: str = "encoding",
     ) -> tuple[int, str]:
-        """Run an FFmpeg export command, parsing progress events from stderr.
+        """Delegate to the shared helper, mapping percent → (step, percent).
 
-        Returns ``(returncode, captured_stderr)``. Stdout is left attached to
-        the parent process so we don't have to drain it (and risk a deadlock
-        if the buffer fills). Progress percent is computed against the
-        expected output duration; values are clamped to [0, 100] inside
-        :py:meth:`_emit_progress`.
+        Returns ``(returncode, captured_stderr)``.
         """
-        cmd = ["nice", "-n", str(PROCESS_PRIORITY_LOW)] + self._inject_progress_flags(
-            ffmpeg_cmd
-        )
-
         if isinstance(playlist_lines, list):
             stdin_payload = "\n".join(playlist_lines)
         else:
             stdin_payload = playlist_lines
 
-        expected_duration = self._expected_output_duration_seconds()
-
-        self._emit_progress(step, 0.0)
-
-        proc = sp.Popen(
-            cmd,
-            stdin=sp.PIPE,
-            stderr=sp.PIPE,
-            text=True,
-            encoding="ascii",
-            errors="replace",
+        return run_ffmpeg_with_progress(
+            ffmpeg_cmd,
+            expected_duration_seconds=self._expected_output_duration_seconds(),
+            on_progress=lambda percent: self._emit_progress(step, percent),
+            stdin_payload=stdin_payload,
+            use_low_priority=True,
         )
-
-        assert proc.stdin is not None
-        assert proc.stderr is not None
-
-        try:
-            proc.stdin.write(stdin_payload)
-        except (BrokenPipeError, OSError):
-            # FFmpeg may have rejected the input early; still wait for it
-            # to terminate so the returncode is meaningful.
-            pass
-        finally:
-            try:
-                proc.stdin.close()
-            except (BrokenPipeError, OSError):
-                pass
-
-        captured: list[str] = []
-
-        try:
-            for raw_line in proc.stderr:
-                captured.append(raw_line)
-                line = raw_line.strip()
-
-                if not line:
-                    continue
-
-                if line.startswith("out_time_us="):
-                    if expected_duration <= 0:
-                        continue
-                    try:
-                        out_time_us = int(line.split("=", 1)[1])
-                    except (ValueError, IndexError):
-                        continue
-                    if out_time_us < 0:
-                        continue
-                    out_seconds = out_time_us / 1_000_000.0
-                    percent = (out_seconds / expected_duration) * 100.0
-                    self._emit_progress(step, percent)
-                elif line == "progress=end":
-                    self._emit_progress(step, 100.0)
-                    break
-        except Exception:
-            logger.exception("Failed reading FFmpeg progress for %s", self.export_id)
-
-        proc.wait()
-
-        # Drain any remaining stderr so callers can log it on failure.
-        try:
-            remaining = proc.stderr.read()
-            if remaining:
-                captured.append(remaining)
-        except Exception:
-            pass
-
-        return proc.returncode, "".join(captured)
 
     def get_datetime_from_timestamp(self, timestamp: int) -> str:
         # return in iso format using the configured ui.timezone when set,
@@ -420,6 +437,7 @@ class RecordingExporter(threading.Thread):
             return None
 
         total_output = windows[-1][2] + (windows[-1][1] - windows[-1][0])
+        last_recorded_end = windows[-1][1]
 
         def wall_to_output(t: float) -> float:
             t = max(float(self.start_time), min(float(self.end_time), t))
@@ -432,8 +450,18 @@ class RecordingExporter(threading.Thread):
 
         chapter_blocks: list[str] = []
         for review in review_rows:
+            if review.start_time is None:
+                continue
+            # In-progress segments have a NULL end_time until the activity
+            # closes; clamp to the last recorded second so the chapter never
+            # extends past the actual video.
+            review_end = (
+                float(review.end_time)
+                if review.end_time is not None
+                else last_recorded_end
+            )
             start_out = wall_to_output(float(review.start_time))
-            end_out = wall_to_output(float(review.end_time))
+            end_out = wall_to_output(review_end)
 
             # Drop chapters that fall entirely in a recording gap, or are
             # too short to be navigable in a player.
@@ -447,9 +475,14 @@ class RecordingExporter(threading.Thread):
                 if label and label not in labels:
                     labels.append(label)
 
-            title = str(review.severity).capitalize()
-            if labels:
-                title = f"{title}: {', '.join(labels)}"
+            metadata = data.get("metadata") or {}
+            title = metadata.get("title")
+
+            if not title:
+                title = str(review.severity).capitalize()
+
+                if labels:
+                    title = f"{title}: {', '.join(labels)}"
 
             chapter_blocks.append(
                 "[CHAPTER]\n"
@@ -516,16 +549,14 @@ class RecordingExporter(threading.Thread):
             except DoesNotExist:
                 return ""
 
-            diff = self.start_time - preview.start_time
-            minutes = int(diff / 60)
-            seconds = int(diff % 60)
+            diff = max(0.0, float(self.start_time) - float(preview.start_time))
             ffmpeg_cmd = [
-                "/usr/lib/ffmpeg/7.0/bin/ffmpeg",  # hardcode path for exports thumbnail due to missing libwebp support
+                "/usr/lib/ffmpeg/8.0/bin/ffmpeg",  # hardcode path for exports thumbnail due to missing libwebp support
                 "-hide_banner",
                 "-loglevel",
                 "warning",
                 "-ss",
-                f"00:{minutes}:{seconds}",
+                f"{diff:.3f}",
                 "-i",
                 preview.path,
                 "-frames",
@@ -643,7 +674,9 @@ class RecordingExporter(threading.Thread):
         else:
             chapters_path = self._build_chapter_metadata_file(recordings)
             chapter_args = (
-                f" -i {chapters_path} -map 0 -map_metadata 1" if chapters_path else ""
+                f" -i {chapters_path} -map 0 -dn -map_metadata 1"
+                if chapters_path
+                else ""
             )
             ffmpeg_cmd = (
                 f"{self.config.ffmpeg.ffmpeg_path} -hide_banner {ffmpeg_input}{chapter_args} -c copy -movflags +faststart"

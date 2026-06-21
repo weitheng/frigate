@@ -24,7 +24,7 @@ from frigate.config.camera.updater import (
 )
 from frigate.const import PROCESS_PRIORITY_HIGH
 from frigate.log import LogPipe
-from frigate.util.builtin import EventsPerSecond, get_ffmpeg_arg_list
+from frigate.util.builtin import EventsPerSecond, get_record_segment_time
 from frigate.util.ffmpeg import start_or_restart_ffmpeg, stop_ffmpeg
 from frigate.util.image import (
     FrameManager,
@@ -33,23 +33,6 @@ from frigate.util.image import (
 from frigate.util.process import FrigateProcess
 
 logger = logging.getLogger(__name__)
-
-# all built-in record presets use this segment_time
-DEFAULT_RECORD_SEGMENT_TIME = 10
-
-
-def _get_record_segment_time(config: CameraConfig) -> int:
-    """Extract -segment_time from the camera's record output args."""
-    record_args = get_ffmpeg_arg_list(config.ffmpeg.output_args.record)
-
-    if record_args and record_args[0].startswith("preset"):
-        return DEFAULT_RECORD_SEGMENT_TIME
-
-    try:
-        idx = record_args.index("-segment_time")
-        return int(record_args[idx + 1])
-    except (ValueError, IndexError):
-        return DEFAULT_RECORD_SEGMENT_TIME
 
 
 def capture_frames(
@@ -174,6 +157,7 @@ class CameraWatchdog(threading.Thread):
         )
         self.requestor = InterProcessRequestor()
         self.was_enabled = self.config.enabled
+        self.was_record_enabled_in_config = self.config.record.enabled_in_config
 
         self.segment_subscriber = RecordingsDataSubscriber(RecordingsDataTypeEnum.all)
         self.latest_valid_segment_time: float = 0
@@ -184,7 +168,7 @@ class CameraWatchdog(threading.Thread):
         # `valid` segments are published with the segment's start time, so the
         # gap between consecutive publishes can reach 2 * segment_time. Pad the
         # staleness threshold so it's never tighter than that worst case.
-        segment_time = _get_record_segment_time(self.config)
+        segment_time = get_record_segment_time(self.config)
         self.record_stale_threshold = max(120, 2 * segment_time + 30)
 
         # Stall tracking (based on last processed frame)
@@ -321,6 +305,22 @@ class CameraWatchdog(threading.Thread):
                     self._send_detect_status("disabled", now)
                     self._send_record_status("disabled", now)
                 self.was_enabled = enabled
+                continue
+
+            record_enabled_in_config = self.config.record.enabled_in_config
+            if record_enabled_in_config != self.was_record_enabled_in_config:
+                if record_enabled_in_config and enabled:
+                    self.logger.debug(
+                        f"Record enabled in config for {self.config.name}, restarting ffmpeg"
+                    )
+                    self.stop_all_ffmpeg()
+                    self.start_all_ffmpeg()
+                    self.latest_valid_segment_time = 0
+                    self.latest_invalid_segment_time = 0
+                    self.latest_cache_segment_time = 0
+                    self.record_enable_time = datetime.now().astimezone(timezone.utc)
+                    last_restart_time = datetime.now().timestamp()
+                self.was_record_enabled_in_config = record_enabled_in_config
                 continue
 
             if not enabled:

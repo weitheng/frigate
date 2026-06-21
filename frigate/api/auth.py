@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -26,6 +27,11 @@ from frigate.api.defs.request.app_body import (
     AppPutRoleBody,
 )
 from frigate.api.defs.tags import Tags
+from frigate.api.media_auth import (
+    check_camera_access,
+    deny_response_for_media_uri,
+    is_role_restricted,
+)
 from frigate.config import AuthConfig, NetworkingConfig, ProxyConfig
 from frigate.const import CONFIG_DIR, JWT_SECRET_ENV_VAR, PASSWORD_HASH_ALGORITHM
 from frigate.models import User
@@ -633,6 +639,9 @@ def auth(request: Request):
         logger.debug("X-Proxy-Secret header does not match configured secret value")
         return fail_response
 
+    original_url = request.headers.get("x-original-url")
+    frigate_config = request.app.frigate_config
+
     # if auth is disabled, just apply the proxy header map and return success
     if not auth_config.enabled:
         # pass the user header value from the upstream proxy if a mapping is specified
@@ -649,6 +658,15 @@ def auth(request: Request):
         role = resolve_role(request.headers, proxy_config, config_roles_set)
 
         success_response.headers["remote-role"] = role
+
+        deny_status = deny_response_for_media_uri(original_url, role, frigate_config)
+        if deny_status is not None:
+            return Response("", status_code=deny_status)
+
+        deny_status = deny_response_for_go2rtc_stream(original_url, role, request)
+        if deny_status is not None:
+            return Response("", status_code=deny_status)
+
         return success_response
 
     # now apply authentication
@@ -743,6 +761,15 @@ def auth(request: Request):
 
         success_response.headers["remote-user"] = user
         success_response.headers["remote-role"] = role
+
+        deny_status = deny_response_for_media_uri(original_url, role, frigate_config)
+        if deny_status is not None:
+            return Response("", status_code=deny_status)
+
+        deny_status = deny_response_for_go2rtc_stream(original_url, role, request)
+        if deny_status is not None:
+            return Response("", status_code=deny_status)
+
         return success_response
     except Exception as e:
         logger.error(f"Error parsing jwt: {e}")
@@ -812,6 +839,11 @@ limiter = Limiter(key_func=get_remote_addr)
 )
 @limiter.limit(limit_value=rateLimiter.get_limit)
 def login(request: Request, body: AppPostLoginBody):
+    if not request.app.frigate_config.auth.enabled:
+        return JSONResponse(
+            content={"message": "Authentication is disabled"}, status_code=404
+        )
+
     JWT_COOKIE_NAME = request.app.frigate_config.auth.cookie_name
     JWT_COOKIE_SECURE = request.app.frigate_config.auth.cookie_secure
     JWT_SESSION_LENGTH = request.app.frigate_config.auth.session_length
@@ -1064,19 +1096,19 @@ async def require_camera_access(
         raise HTTPException(status_code=current_user.status_code, detail=detail)
 
     role = current_user["role"]
-    all_camera_names = set(request.app.frigate_config.cameras.keys())
-    roles_dict = request.app.frigate_config.auth.roles
-    allowed_cameras = User.get_allowed_cameras(role, roles_dict, all_camera_names)
+    frigate_config = request.app.frigate_config
 
-    # Admin or full access bypasses
-    if role == "admin" or not roles_dict.get(role):
+    if check_camera_access(role, camera_name, frigate_config):
         return
 
-    if camera_name not in allowed_cameras:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Access denied to camera '{camera_name}'. Allowed: {allowed_cameras}",
-        )
+    all_camera_names = set(frigate_config.cameras.keys())
+    allowed_cameras = User.get_allowed_cameras(
+        role, frigate_config.auth.roles, all_camera_names
+    )
+    raise HTTPException(
+        status_code=403,
+        detail=f"Access denied to camera '{camera_name}'. Allowed: {allowed_cameras}",
+    )
 
 
 def _get_stream_owner_cameras(request: Request, stream_name: str) -> set[str]:
@@ -1091,6 +1123,66 @@ def _get_stream_owner_cameras(request: Request, stream_name: str) -> set[str]:
             owner_cameras.add(camera_name)
 
     return owner_cameras
+
+
+# nginx proxies these paths straight to go2rtc with authentication-only checks
+# (see auth_request.conf). Each names the desired stream via the `src` query
+# param, so the camera-level check must happen here in the `/auth` subrequest —
+# `require_go2rtc_stream_access` only guards the REST `/go2rtc/streams/{name}`
+# endpoint, not these proxied live-stream paths.
+GO2RTC_STREAM_PROXY_PATHS = frozenset(
+    {
+        "/live/mse/api/ws",
+        "/live/webrtc/api/ws",
+        "/api/go2rtc/webrtc",
+    }
+)
+
+
+def deny_response_for_go2rtc_stream(
+    original_url: Optional[str], role: Optional[str], request: Request
+) -> Optional[int]:
+    """Block role-restricted users from go2rtc live streams they cannot access.
+
+    Returns 403 when any `src` stream named in `original_url` resolves to a
+    camera outside the role's allow-list (or when no `src` is provided on a
+    stream-proxy path), otherwise None. Mirrors the resolution logic in
+    `require_go2rtc_stream_access` so substream names map to their owning
+    camera correctly.
+    """
+    if not original_url:
+        return None
+
+    parsed = urlparse(original_url)
+    if parsed.path not in GO2RTC_STREAM_PROXY_PATHS:
+        return None
+
+    frigate_config = request.app.frigate_config
+
+    # admin and full-access roles (no allow-list) bypass the camera check
+    if not role or not is_role_restricted(role, frigate_config):
+        return None
+
+    sources = parse_qs(parsed.query).get("src", [])
+    if not sources:
+        # a stream-proxy request naming no stream has nothing legitimate to
+        # show a restricted user
+        return 403
+
+    allowed_cameras = set(
+        User.get_allowed_cameras(
+            role,
+            frigate_config.auth.roles,
+            set(frigate_config.cameras.keys()),
+        )
+    )
+
+    # deny if any requested source resolves outside the allow-list
+    for src in sources:
+        if not (_get_stream_owner_cameras(request, src) & allowed_cameras):
+            return 403
+
+    return None
 
 
 async def require_go2rtc_stream_access(

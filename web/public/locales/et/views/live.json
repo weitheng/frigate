@@ -12,7 +12,8 @@
     "transcription": "Heli üleskirjutus",
     "snapshots": "Hetkvõtted",
     "autotracking": "Automaatne jälgimine",
-    "recording": "Salvestus"
+    "recording": "Salvestus",
+    "camera": "Kaamera"
   },
   "documentTitle": {
     "default": "Frigate reaalajas"
@@ -73,7 +74,9 @@
   },
   "camera": {
     "enable": "Lülita kaamera sisse",
-    "disable": "Lülita kaamera välja"
+    "disable": "Lülita kaamera välja",
+    "turnOn": "Lülita kaamera sisse",
+    "turnOff": "Lülita kaamera välja"
   },
   "detect": {
     "enable": "Lülita tuvastamine sisse",
@@ -81,7 +84,8 @@
   },
   "recording": {
     "enable": "Lülita salvestamine sisse",
-    "disable": "Lülita salvestamine välja"
+    "disable": "Lülita salvestamine välja",
+    "disabledInConfig": "Pead olema selle kaamera jaoks Seadistustest määranud salvestamise."
   },
   "snapshots": {
     "enable": "Lülita hetkvõtted sisse",

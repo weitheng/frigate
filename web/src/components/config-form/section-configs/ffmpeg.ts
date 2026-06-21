@@ -22,6 +22,27 @@ const ffmpegArgsWidget = (
 const ffmpeg: SectionConfigOverrides = {
   base: {
     sectionDocs: "/configuration/ffmpeg_presets",
+    fieldMessages: [
+      {
+        key: "hwaccel-manual-not-recommended",
+        field: "hwaccel_args",
+        position: "after",
+        messageKey: "configMessages.ffmpeg.hwaccelManualNotRecommended",
+        severity: "warning",
+        condition: (ctx) => {
+          // Manual mode is active when hwaccel_args is an explicit args list
+          // or a non-preset string
+          const value = ctx.formData?.hwaccel_args;
+          if (Array.isArray(value)) {
+            return value.length > 0;
+          }
+          if (typeof value === "string") {
+            return !value.startsWith("preset-");
+          }
+          return false;
+        },
+      },
+    ],
     fieldDocs: {
       hwaccel_args: "/configuration/ffmpeg_presets#hwaccel-presets",
       "inputs.hwaccel_args": "/configuration/ffmpeg_presets#hwaccel-presets",
@@ -41,19 +62,12 @@ const ffmpeg: SectionConfigOverrides = {
       "input_args",
       "hwaccel_args",
       "output_args",
-      "path",
-      "retry_interval",
       "apple_compatibility",
+      "path",
       "gpu",
     ],
-    hiddenFields: [],
-    advancedFields: [
-      "path",
-      "global_args",
-      "retry_interval",
-      "apple_compatibility",
-      "gpu",
-    ],
+    hiddenFields: ["retry_interval"],
+    advancedFields: ["path", "global_args", "gpu"],
     overrideFields: [
       "inputs",
       "path",
@@ -61,7 +75,6 @@ const ffmpeg: SectionConfigOverrides = {
       "input_args",
       "hwaccel_args",
       "output_args",
-      "retry_interval",
       "apple_compatibility",
       "gpu",
     ],
@@ -125,19 +138,10 @@ const ffmpeg: SectionConfigOverrides = {
       "global_args",
       "input_args",
       "output_args",
-      "retry_interval",
       "apple_compatibility",
       "gpu",
     ],
-    advancedFields: [
-      "global_args",
-      "input_args",
-      "output_args",
-      "path",
-      "retry_interval",
-      "apple_compatibility",
-      "gpu",
-    ],
+    advancedFields: ["global_args", "input_args", "output_args", "path", "gpu"],
     uiSchema: {
       path: {
         "ui:options": { size: "md" },

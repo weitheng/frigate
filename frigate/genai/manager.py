@@ -6,7 +6,7 @@ no chat feature is active) are never initialized.
 """
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from frigate.config import FrigateConfig
 from frigate.config.camera.genai import GenAIConfig, GenAIRoleEnum
@@ -62,7 +62,9 @@ class GenAIClientManager:
     def _get_client(self, name: str) -> "Optional[GenAIClient]":
         """Return the client for *name*, creating it on first access."""
         if name in self._clients:
-            return self._clients[name]
+            client = self._clients[name]
+            client.ensure_provider()
+            return client
 
         from frigate.genai import PROVIDERS
 
@@ -78,7 +80,7 @@ class GenAIClientManager:
             return None
 
         try:
-            client: "GenAIClient" = provider_cls(genai_cfg)
+            client = provider_cls(genai_cfg)
         except Exception as e:
             logger.exception(
                 "Failed to create GenAI client for provider %s: %s",
@@ -108,11 +110,16 @@ class GenAIClientManager:
         name = self._role_map.get(GenAIRoleEnum.embeddings)
         return self._get_client(name) if name else None
 
-    def list_models(self) -> dict[str, list[str]]:
-        """Return available models keyed by config entry name."""
-        result: dict[str, list[str]] = {}
-        for name in self._configs:
+    def list_models(self) -> dict[str, dict[str, Any]]:
+        """Return per-entry model lists and capabilities, keyed by config entry name."""
+        result: dict[str, dict[str, Any]] = {}
+        for name, genai_cfg in self._configs.items():
             client = self._get_client(name)
-            if client:
-                result[name] = client.list_models()
+            if not client:
+                continue
+            result[name] = {
+                "models": client.list_models(),
+                "roles": [r.value for r in genai_cfg.roles],
+                "supports_toggleable_thinking": client.supports_toggleable_thinking,
+            }
         return result

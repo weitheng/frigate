@@ -2,7 +2,7 @@
   "alerts": "Avvisi",
   "detections": "Rilevamenti",
   "motion": {
-    "label": "Movimenti",
+    "label": "Movimento",
     "only": "Solo movimenti"
   },
   "empty": {
@@ -20,8 +20,8 @@
   },
   "markTheseItemsAsReviewed": "Segna questi elementi come visti",
   "markAsReviewed": "Segna come visto",
-  "documentTitle": "Rivedi - Frigate",
-  "allCameras": "Tutte le camere",
+  "documentTitle": "Revisiona - Frigate",
+  "allCameras": "Tutte le telecamere",
   "timeline": {
     "label": "Linea temporale"
   },
