@@ -65,7 +65,7 @@ RUN --mount=type=bind,source=docker/main/build_intel_media_driver.sh,target=/dep
 FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS go2rtc
 ARG TARGETARCH
 ARG GO2RTC_REPO=https://github.com/weitheng/go2rtc
-ARG GO2RTC_REF=d5e3c9aff1b2a96b4b81c73e07585ec58b03eb1f
+ARG GO2RTC_REF=084d9b7e702c614067ec7d945593af18e0f9def3
 WORKDIR /build
 RUN git clone --filter=blob:none "${GO2RTC_REPO}" . \
     && git checkout "${GO2RTC_REF}"
