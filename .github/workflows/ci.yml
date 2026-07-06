@@ -159,21 +159,6 @@ jobs:
             tensorrt.tags=${{ steps.setup.outputs.image-name }}-tensorrt-legacy
             *.cache-from=type=registry,ref=${{ steps.setup.outputs.cache-name }}-tensorrt-legacy
             *.cache-to=type=registry,ref=${{ steps.setup.outputs.cache-name }}-tensorrt-legacy,mode=max
-      - name: Clear buildx cache
-        run: docker buildx prune -af && df -h /
-      - name: AMD/ROCm general build
-        env:
-          HSA_OVERRIDE: 0
-        uses: docker/bake-action@v7
-        with:
-          source: .
-          push: true
-          targets: rocm
-          files: docker/rocm/rocm.hcl
-          set: |
-            rocm.tags=${{ steps.setup.outputs.image-name }}-rocm
-            *.cache-to=type=registry,ref=${{ steps.setup.outputs.cache-name }}-rocm,mode=max
-            *.cache-from=type=registry,ref=${{ steps.setup.outputs.cache-name }}-rocm
   arm64_extra_builds:
     runs-on: ubuntu-22.04-arm
     name: ARM Extra Build
