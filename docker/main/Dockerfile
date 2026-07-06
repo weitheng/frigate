@@ -60,10 +60,19 @@ ARG DEBIAN_FRONTEND
 RUN --mount=type=bind,source=docker/main/build_intel_media_driver.sh,target=/deps/build_intel_media_driver.sh \
     /deps/build_intel_media_driver.sh
 
-FROM scratch AS go2rtc
+# go2rtc built from source: fork with HomeKit Secure Video (HKSV) support
+# https://github.com/weitheng/go2rtc (upstream v1.9.13+ with HKSV commit)
+FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS go2rtc
 ARG TARGETARCH
-WORKDIR /rootfs/usr/local/go2rtc/bin
-ADD --link --chmod=755 "https://github.com/AlexxIT/go2rtc/releases/download/v1.9.13/go2rtc_linux_${TARGETARCH}" go2rtc
+ARG GO2RTC_REPO=https://github.com/weitheng/go2rtc
+ARG GO2RTC_REF=d5e3c9aff1b2a96b4b81c73e07585ec58b03eb1f
+WORKDIR /build
+RUN git clone --filter=blob:none "${GO2RTC_REPO}" . \
+    && git checkout "${GO2RTC_REF}"
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags "-s -w" -o /rootfs/usr/local/go2rtc/bin/go2rtc
 
 FROM wget AS tempio
 ARG TARGETARCH
