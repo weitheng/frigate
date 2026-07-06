@@ -121,6 +121,13 @@ jobs:
         uses: ./.github/actions/setup
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # runner has ~14GB free disk, not enough for three large builds
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af
+          df -h /
       - name: Build and push TensorRT (x86 GPU)
         env:
           COMPUTE_LEVEL: "50 60 70 80 90"
@@ -134,6 +141,10 @@ jobs:
             tensorrt.tags=${{ steps.setup.outputs.image-name }}-tensorrt
             *.cache-from=type=registry,ref=${{ steps.setup.outputs.cache-name }}-tensorrt
             *.cache-to=type=registry,ref=${{ steps.setup.outputs.cache-name }}-tensorrt,mode=max
+      # local buildx cache is not needed between variants (registry cache
+      # is used), drop it to free disk for the next build
+      - name: Clear buildx cache
+        run: docker buildx prune -af && df -h /
       - name: Build and push TensorRT (x86 Legacy GPU)
         env:
           COMPUTE_LEVEL: "50 60 70 80 90"
@@ -148,6 +159,8 @@ jobs:
             tensorrt.tags=${{ steps.setup.outputs.image-name }}-tensorrt-legacy
             *.cache-from=type=registry,ref=${{ steps.setup.outputs.cache-name }}-tensorrt-legacy
             *.cache-to=type=registry,ref=${{ steps.setup.outputs.cache-name }}-tensorrt-legacy,mode=max
+      - name: Clear buildx cache
+        run: docker buildx prune -af && df -h /
       - name: AMD/ROCm general build
         env:
           HSA_OVERRIDE: 0
