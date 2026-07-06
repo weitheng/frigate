@@ -100,8 +100,8 @@ class CameraConfig(FrigateBaseModel):
         description="Settings for face detection and recognition for this camera.",
     )
     ffmpeg: CameraFfmpegConfig = Field(
-        title="FFmpeg",
-        description="FFmpeg settings including binary path, args, hwaccel options, and per-role output args.",
+        title="Streams (FFmpeg)",
+        description="Camera stream inputs and FFmpeg options, including binary path, args, hwaccel, and per-role output args.",
     )
     live: CameraLiveConfig = Field(
         default_factory=CameraLiveConfig,
@@ -146,7 +146,7 @@ class CameraConfig(FrigateBaseModel):
     timestamp_style: TimestampStyleConfig = Field(
         default_factory=TimestampStyleConfig,
         title="Timestamp style",
-        description="Styling options for in-feed timestamps applied to recordings and snapshots.",
+        description="Styling options for timestamps applied to snapshots and Debug view.",
     )
 
     # Options without global fallback

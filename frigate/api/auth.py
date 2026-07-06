@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -26,7 +27,11 @@ from frigate.api.defs.request.app_body import (
     AppPutRoleBody,
 )
 from frigate.api.defs.tags import Tags
-from frigate.api.media_auth import check_camera_access, deny_response_for_media_uri
+from frigate.api.media_auth import (
+    check_camera_access,
+    deny_response_for_media_uri,
+    is_role_restricted,
+)
 from frigate.config import AuthConfig, NetworkingConfig, ProxyConfig
 from frigate.const import CONFIG_DIR, JWT_SECRET_ENV_VAR, PASSWORD_HASH_ALGORITHM
 from frigate.models import User
@@ -249,7 +254,14 @@ rateLimiter = RateLimiter()
 
 
 def get_remote_addr(request: Request):
-    route = list(reversed(request.headers.get("x-forwarded-for").split(",")))
+    # fall back to the direct TCP peer when no proxy chain is present
+    direct_addr = request.client.host if request.client else None
+
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if not forwarded_for:
+        return direct_addr or "127.0.0.1"
+
+    route = list(reversed(forwarded_for.split(",")))
     logger.debug(f"IP Route: {[r for r in route]}")
     trusted_proxies = []
     for proxy in request.app.frigate_config.auth.trusted_proxies:
@@ -286,13 +298,8 @@ def get_remote_addr(request: Request):
             logger.debug(f"First untrusted IP: {str(ip)}")
             return str(ip)
 
-    # if there wasn't anything in the route, just return the default
-    remote_addr = None
-
-    if hasattr(request, "remote_addr"):
-        remote_addr = request.remote_addr
-
-    return remote_addr or "127.0.0.1"
+    # every hop in the route was trusted, so fall back to the direct peer
+    return direct_addr or "127.0.0.1"
 
 
 def _cleanup_first_load_seen() -> None:
@@ -411,6 +418,12 @@ def create_encoded_jwt(user, role, expiration, secret):
 
 def set_jwt_cookie(response: Response, cookie_name, encoded_jwt, expiration, secure):
     # TODO: ideally this would set secure as well, but that requires TLS
+    # SameSite is intentionally left unset (browsers default to Lax). Setting
+    # SameSite=Lax/Strict would stop the cookie from being sent in cross-origin
+    # iframes, breaking embedded views such as the Home Assistant Frigate card.
+    # CSRF is instead mitigated by requiring a custom X-CSRF-TOKEN header, which
+    # cross-origin pages cannot set without a CORS preflight that Frigate never
+    # grants (see check_csrf in api/fastapi_app.py).
     response.set_cookie(
         key=cookie_name,
         value=encoded_jwt,
@@ -658,6 +671,10 @@ def auth(request: Request):
         if deny_status is not None:
             return Response("", status_code=deny_status)
 
+        deny_status = deny_response_for_go2rtc_stream(original_url, role, request)
+        if deny_status is not None:
+            return Response("", status_code=deny_status)
+
         return success_response
 
     # now apply authentication
@@ -754,6 +771,10 @@ def auth(request: Request):
         success_response.headers["remote-role"] = role
 
         deny_status = deny_response_for_media_uri(original_url, role, frigate_config)
+        if deny_status is not None:
+            return Response("", status_code=deny_status)
+
+        deny_status = deny_response_for_go2rtc_stream(original_url, role, request)
         if deny_status is not None:
             return Response("", status_code=deny_status)
 
@@ -1110,6 +1131,66 @@ def _get_stream_owner_cameras(request: Request, stream_name: str) -> set[str]:
             owner_cameras.add(camera_name)
 
     return owner_cameras
+
+
+# nginx proxies these paths straight to go2rtc with authentication-only checks
+# (see auth_request.conf). Each names the desired stream via the `src` query
+# param, so the camera-level check must happen here in the `/auth` subrequest —
+# `require_go2rtc_stream_access` only guards the REST `/go2rtc/streams/{name}`
+# endpoint, not these proxied live-stream paths.
+GO2RTC_STREAM_PROXY_PATHS = frozenset(
+    {
+        "/live/mse/api/ws",
+        "/live/webrtc/api/ws",
+        "/api/go2rtc/webrtc",
+    }
+)
+
+
+def deny_response_for_go2rtc_stream(
+    original_url: Optional[str], role: Optional[str], request: Request
+) -> Optional[int]:
+    """Block role-restricted users from go2rtc live streams they cannot access.
+
+    Returns 403 when any `src` stream named in `original_url` resolves to a
+    camera outside the role's allow-list (or when no `src` is provided on a
+    stream-proxy path), otherwise None. Mirrors the resolution logic in
+    `require_go2rtc_stream_access` so substream names map to their owning
+    camera correctly.
+    """
+    if not original_url:
+        return None
+
+    parsed = urlparse(original_url)
+    if parsed.path not in GO2RTC_STREAM_PROXY_PATHS:
+        return None
+
+    frigate_config = request.app.frigate_config
+
+    # admin and full-access roles (no allow-list) bypass the camera check
+    if not role or not is_role_restricted(role, frigate_config):
+        return None
+
+    sources = parse_qs(parsed.query).get("src", [])
+    if not sources:
+        # a stream-proxy request naming no stream has nothing legitimate to
+        # show a restricted user
+        return 403
+
+    allowed_cameras = set(
+        User.get_allowed_cameras(
+            role,
+            frigate_config.auth.roles,
+            set(frigate_config.cameras.keys()),
+        )
+    )
+
+    # deny if any requested source resolves outside the allow-list
+    for src in sources:
+        if not (_get_stream_owner_cameras(request, src) & allowed_cameras):
+            return 403
+
+    return None
 
 
 async def require_go2rtc_stream_access(

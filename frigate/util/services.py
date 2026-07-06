@@ -416,6 +416,11 @@ def get_intel_gpu_stats(
 
     snapshot_a = _read_intel_drm_fdinfo(target_pdev)
     if not snapshot_a:
+        logger.warning(
+            "Unable to collect Intel GPU stats: no DRM fdinfo entries found"
+            "%s. Check that /proc is readable and the i915/xe driver is loaded",
+            f" for pdev {target_pdev}" if target_pdev else "",
+        )
         return None
 
     start = time.monotonic()
@@ -424,6 +429,9 @@ def get_intel_gpu_stats(
 
     snapshot_b = _read_intel_drm_fdinfo(target_pdev)
     if not snapshot_b or elapsed_ns <= 0:
+        logger.warning(
+            "Unable to collect Intel GPU stats: second DRM fdinfo sample was empty"
+        )
         return None
 
     def _new_engine_pct() -> dict[str, float]:
@@ -464,6 +472,10 @@ def get_intel_gpu_stats(
         pid_pct[data_b["pid"]] = pid_pct.get(data_b["pid"], 0.0) + client_total
 
     if not per_pdev_engine_pct:
+        logger.warning(
+            "Unable to collect Intel GPU stats: no per-engine counters available "
+            "(i915 requires kernel >= 5.19)"
+        )
         return None
 
     names = intel_gpu_name_resolver.get_names()
@@ -478,7 +490,7 @@ def get_intel_gpu_stats(
         overall_pct = min(100.0, compute_pct + dec_pct)
 
         entry: dict[str, Any] = {
-            "name": names.get(pdev) or f"Intel GPU {pdev}",
+            "name": names.get(pdev) or "Intel iGPU",
             "vendor": "intel",
             "gpu": f"{round(overall_pct, 2)}%",
             "mem": "-%",
@@ -778,7 +790,7 @@ def get_hailo_temps() -> dict[str, float]:
     return temps
 
 
-def _go2rtc_arbitrary_exec_allowed() -> bool:
+def is_go2rtc_arbitrary_exec_allowed() -> bool:
     """Read the GO2RTC_ALLOW_ARBITRARY_EXEC override from env, docker
     secrets, or the Home Assistant add-on options file."""
     raw: Optional[str] = None
@@ -810,7 +822,7 @@ def is_restricted_go2rtc_source(stream_source: str) -> bool:
     and the GO2RTC_ALLOW_ARBITRARY_EXEC override is not set."""
     if not stream_source.strip().startswith(("echo:", "expr:", "exec:")):
         return False
-    return not _go2rtc_arbitrary_exec_allowed()
+    return not is_go2rtc_arbitrary_exec_allowed()
 
 
 def ffprobe_stream(ffmpeg, path: str, detailed: bool = False) -> sp.CompletedProcess:
@@ -864,6 +876,131 @@ def ffprobe_stream(ffmpeg, path: str, detailed: bool = False) -> sp.CompletedPro
     if result.returncode != 0 and clean_path.startswith("rtsp://"):
         result = run(rtsp_transport="tcp")
 
+    return result
+
+
+KEYFRAME_PROBE_WINDOW_SECONDS = 20
+KEYFRAME_GAP_WARNING_SECONDS = 4.0
+
+
+def parse_keyframe_packets(output: str) -> Tuple[List[float], Optional[float]]:
+    """Parse ffprobe CSV `pts_time,flags` output.
+
+    Returns the presentation timestamps of keyframes (flags containing "K")
+    and the maximum timestamp observed across all packets.
+    """
+    keyframe_pts: List[float] = []
+    max_pts: Optional[float] = None
+
+    for line in output.splitlines():
+        parts = line.split(",")
+        if len(parts) < 2:
+            continue
+        try:
+            pts = float(parts[0])
+        except ValueError:
+            continue
+        if max_pts is None or pts > max_pts:
+            max_pts = pts
+        if "K" in parts[1]:
+            keyframe_pts.append(pts)
+
+    return keyframe_pts, max_pts
+
+
+def classify_keyframe_gaps(
+    keyframe_pts: List[float], segment_time: int
+) -> dict[str, Any]:
+    """Classify keyframe spacing for recording suitability.
+
+    A camera using a smart/+ codec or a long/variable GOP produces large or
+    irregular gaps between keyframes, which breaks time-based recording
+    segmentation. Severity:
+      - "unknown" when fewer than two keyframes were observed
+      - "error" when the longest gap exceeds the record segment length
+      - "warning" when the longest gap exceeds the warning threshold
+      - "ok" otherwise
+    """
+    thresholds = {
+        "warning": KEYFRAME_GAP_WARNING_SECONDS,
+        "error": segment_time,
+    }
+
+    if len(keyframe_pts) < 2:
+        return {
+            "keyframe_count": len(keyframe_pts),
+            "max_gap": None,
+            "mean_gap": None,
+            "min_gap": None,
+            "segment_time": segment_time,
+            "severity": "unknown",
+            "thresholds": thresholds,
+        }
+
+    gaps = [b - a for a, b in zip(keyframe_pts, keyframe_pts[1:])]
+    max_gap = max(gaps)
+
+    if max_gap > segment_time:
+        severity = "error"
+    elif max_gap > KEYFRAME_GAP_WARNING_SECONDS:
+        severity = "warning"
+    else:
+        severity = "ok"
+
+    return {
+        "keyframe_count": len(keyframe_pts),
+        "max_gap": round(max_gap, 2),
+        "mean_gap": round(sum(gaps) / len(gaps), 2),
+        "min_gap": round(min(gaps), 2),
+        "segment_time": segment_time,
+        "severity": severity,
+        "thresholds": thresholds,
+    }
+
+
+async def analyze_record_keyframes(
+    ffmpeg, url: str, segment_time: int, window: int = KEYFRAME_PROBE_WINDOW_SECONDS
+) -> dict[str, Any]:
+    """Probe a stream for ~`window` seconds and classify its keyframe spacing.
+
+    Reads video packet flags via ffprobe to find keyframes, then measures the
+    gaps between them. On timeout or failure returns an "unknown" result rather
+    than a false all-clear.
+    """
+    clean_url = escape_special_characters(url)
+    cmd = [
+        ffmpeg.ffprobe_path,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-read_intervals",
+        f"%+{window}",
+        "-show_entries",
+        "packet=pts_time,flags",
+        "-of",
+        "csv=p=0",
+        clean_url,
+    ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=window + 15)
+    except asyncio.TimeoutError:
+        logger.warning("Keyframe probe timed out for record stream")
+        proc.kill()
+        return classify_keyframe_gaps([], segment_time)
+    except OSError as err:
+        logger.error("Keyframe probe failed: %s", err)
+        return classify_keyframe_gaps([], segment_time)
+
+    keyframe_pts, max_pts = parse_keyframe_packets(stdout.decode("utf-8", "replace"))
+    result = classify_keyframe_gaps(keyframe_pts, segment_time)
+    result["duration_observed"] = round(max_pts, 2) if max_pts is not None else None
     return result
 
 

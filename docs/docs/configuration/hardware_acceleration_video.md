@@ -72,7 +72,7 @@ Frigate can utilize most Intel integrated GPUs and Arc GPUs to accelerate video 
 
 :::note
 
-The default driver is `iHD`. You may need to change the driver to `i965` by adding the following environment variable `LIBVA_DRIVER_NAME=i965` to your docker-compose file or [in the `config.yml` for HA App users](advanced.md#environment_vars).
+The default driver is `iHD`. You may need to change the driver to `i965` by adding the following environment variable `LIBVA_DRIVER_NAME=i965` to your docker-compose file or [in the `config.yml` for HA App users](advanced/system.md#environment_vars).
 
 See [The Intel Docs](https://www.intel.com/content/www/us/en/support/articles/000005505/processors.html) to figure out what generation your CPU is.
 
@@ -85,7 +85,7 @@ VAAPI supports automatic profile selection so it will work automatically with bo
 <ConfigTabs>
 <TabItem value="ui">
 
-Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `VAAPI (Intel/AMD GPU)`. For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > FFmpeg" />.
+Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `VAAPI (Intel/AMD GPU)`. For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > Streams (FFmpeg)" />.
 
 </TabItem>
 <TabItem value="yaml">
@@ -105,7 +105,7 @@ ffmpeg:
 <ConfigTabs>
 <TabItem value="ui">
 
-Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `Intel QuickSync (H.264)`. For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > FFmpeg" />.
+Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `Intel QuickSync (H.264)`. For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > Streams (FFmpeg)" />.
 
 </TabItem>
 <TabItem value="yaml">
@@ -123,7 +123,7 @@ ffmpeg:
 <ConfigTabs>
 <TabItem value="ui">
 
-Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `Intel QuickSync (H.265)`. For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > FFmpeg" />.
+Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `Intel QuickSync (H.265)`. For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > Streams (FFmpeg)" />.
 
 </TabItem>
 <TabItem value="yaml">
@@ -169,7 +169,7 @@ Frigate can utilize modern AMD integrated GPUs and AMD GPUs to accelerate video 
 
 ### Configuring Radeon Driver
 
-You need to change the driver to `radeonsi` by adding the following environment variable `LIBVA_DRIVER_NAME=radeonsi` to your docker-compose file or [in the `config.yml` for HA App users](advanced.md#environment_vars).
+You need to change the driver to `radeonsi` by adding the following environment variable `LIBVA_DRIVER_NAME=radeonsi` to your docker-compose file or [in the `config.yml` for HA App users](advanced/system.md#environment_vars).
 
 ### Via VAAPI
 
@@ -178,7 +178,7 @@ VAAPI supports automatic profile selection so it will work automatically with bo
 <ConfigTabs>
 <TabItem value="ui">
 
-Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `VAAPI (Intel/AMD GPU)`. For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > FFmpeg" />.
+Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `VAAPI (Intel/AMD GPU)`. For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > Streams (FFmpeg)" />.
 
 </TabItem>
 <TabItem value="yaml">
@@ -193,7 +193,7 @@ ffmpeg:
 
 ## NVIDIA GPUs
 
-While older GPUs may work, it is recommended to use modern, supported GPUs. NVIDIA provides a [matrix of supported GPUs and features](https://developer.nvidia.com/video-encode-and-decode-gpu-support-matrix-new). If your card is on the list and supports CUVID/NVDEC, it will most likely work with Frigate for decoding. However, you must also use [a driver version that will work with FFmpeg](https://github.com/FFmpeg/nv-codec-headers/blob/master/README). Older driver versions may be missing symbols and fail to work, and older cards are not supported by newer driver versions. The only way around this is to [provide your own FFmpeg](/configuration/advanced#custom-ffmpeg-build) that will work with your driver version, but this is unsupported and may not work well if at all.
+While older GPUs may work, it is recommended to use modern, supported GPUs. NVIDIA provides a [matrix of supported GPUs and features](https://developer.nvidia.com/video-encode-and-decode-gpu-support-matrix-new). If your card is on the list and supports CUVID/NVDEC, it will most likely work with Frigate for decoding. However, you must also use [a driver version that will work with FFmpeg](https://github.com/FFmpeg/nv-codec-headers/blob/master/README). Older driver versions may be missing symbols and fail to work, and older cards are not supported by newer driver versions. The only way around this is to [provide your own FFmpeg](/configuration/advanced/system#custom-ffmpeg-build) that will work with your driver version, but this is unsupported and may not work well if at all.
 
 A more complete list of cards and their compatible drivers is available in the [driver release readme](https://download.nvidia.com/XFree86/Linux-x86_64/525.85.05/README/supportedchips.html).
 
@@ -237,7 +237,7 @@ Using `preset-nvidia` ffmpeg will automatically select the necessary profile for
 <ConfigTabs>
 <TabItem value="ui">
 
-Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `NVIDIA GPU`. For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > FFmpeg" />.
+Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `NVIDIA GPU`. For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > Streams (FFmpeg)" />.
 
 </TabItem>
 <TabItem value="yaml">
@@ -300,7 +300,7 @@ If you are using the HA App, you may need to use the full access variant and tur
 <ConfigTabs>
 <TabItem value="ui">
 
-Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `Raspberry Pi (H.264)` (for H.264 streams) or `Raspberry Pi (H.265)` (for H.265/HEVC streams). For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > FFmpeg" />.
+Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `Raspberry Pi (H.264)` (for H.264 streams) or `Raspberry Pi (H.265)` (for H.265/HEVC streams). For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > Streams (FFmpeg)" />.
 
 </TabItem>
 <TabItem value="yaml">
@@ -420,7 +420,7 @@ For example, for H264 video, you'll select `preset-jetson-h264`.
 <ConfigTabs>
 <TabItem value="ui">
 
-Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `NVIDIA Jetson (H.264)` (or `NVIDIA Jetson (H.265)` for HEVC streams). For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > FFmpeg" />.
+Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `NVIDIA Jetson (H.264)` (or `NVIDIA Jetson (H.265)` for HEVC streams). For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > Streams (FFmpeg)" />.
 
 </TabItem>
 <TabItem value="yaml">
@@ -452,7 +452,7 @@ Set the FFmpeg hwaccel preset to enable hardware video processing.
 <ConfigTabs>
 <TabItem value="ui">
 
-Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `Rockchip RKMPP`. For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > FFmpeg" />.
+Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and set **Hardware acceleration arguments** to `Rockchip RKMPP`. For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > Streams (FFmpeg)" />.
 
 </TabItem>
 <TabItem value="yaml">
@@ -519,7 +519,7 @@ Set the FFmpeg hwaccel args to enable hardware video processing.
 <ConfigTabs>
 <TabItem value="ui">
 
-Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and configure the hardware acceleration args and input args manually for Synaptics hardware. For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > FFmpeg" />.
+Navigate to <NavPath path="Settings > Global configuration > FFmpeg" /> and configure the hardware acceleration args and input args manually for Synaptics hardware. For per-camera overrides, navigate to <NavPath path="Settings > Camera configuration > Streams (FFmpeg)" />.
 
 </TabItem>
 <TabItem value="yaml">

@@ -44,6 +44,7 @@ import {
 import { IoMdArrowRoundBack } from "react-icons/io";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
+import { useIsAdmin } from "@/hooks/use-is-admin";
 import useSWR from "swr";
 import { TimeRange, TimelineType } from "@/types/timeline";
 import MobileCameraDrawer from "@/components/overlay/MobileCameraDrawer";
@@ -94,6 +95,7 @@ type RecordingViewProps = {
   filter?: ReviewFilter;
   updateFilter: (newFilter: ReviewFilter) => void;
   refreshData?: () => void;
+  onMotionSearch?: (camera: string) => void;
 };
 export function RecordingView({
   startCamera,
@@ -106,9 +108,11 @@ export function RecordingView({
   filter,
   updateFilter,
   refreshData,
+  onMotionSearch,
 }: RecordingViewProps) {
   const { t } = useTranslation(["views/events", "components/dialog"]);
   const { data: config } = useSWR<FrigateConfig>("config");
+  const isAdmin = useIsAdmin();
   const navigate = useNavigate();
   const location = useLocation();
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -119,8 +123,13 @@ export function RecordingView({
 
   const allowedCameras = useAllowedCameras();
   const effectiveCameras = useMemo(
-    () => allCameras.filter((camera) => allowedCameras.includes(camera)),
-    [allCameras, allowedCameras],
+    () =>
+      allCameras.filter(
+        (camera) =>
+          allowedCameras.includes(camera) &&
+          config?.cameras[camera]?.ui?.review !== false,
+      ),
+    [allCameras, allowedCameras, config?.cameras],
   );
   const [mainCamera, setMainCamera] = useState(startCamera);
 
@@ -325,6 +334,16 @@ export function RecordingView({
       }
     },
     [currentTimeRange, updateSelectedSegment],
+  );
+
+  const onClipPrevious = useCallback(
+    (diff: number) => {
+      manuallySetCurrentTime(
+        currentTime + diff,
+        mainControllerRef.current?.isPlaying() ?? false,
+      );
+    },
+    [currentTime, manuallySetCurrentTime],
   );
 
   const onShareReviewLink = useCallback(
@@ -723,13 +742,20 @@ export function RecordingView({
                   setCustomShareTimestamp(initialTimestamp);
                   setShareTimestampOpen(true);
                 }}
-                onDebugReplayClick={() => {
-                  setDebugReplayRange({
-                    after: timeRange.before - 60,
-                    before: timeRange.before,
-                  });
-                  setDebugReplayMode("select");
-                }}
+                onMotionSearchClick={
+                  onMotionSearch ? () => onMotionSearch(mainCamera) : undefined
+                }
+                onDebugReplayClick={
+                  isAdmin
+                    ? () => {
+                        setDebugReplayRange({
+                          after: timeRange.before - 60,
+                          before: timeRange.before,
+                        });
+                        setDebugReplayMode("select");
+                      }
+                    : undefined
+                }
                 onExportClick={() => {
                   const now = new Date(timeRange.before * 1000);
                   now.setHours(now.getHours() - 1);
@@ -801,6 +827,9 @@ export function RecordingView({
                 }
               }}
               onShareTimestamp={onShareReviewLink}
+              onMotionSearch={
+                onMotionSearch ? () => onMotionSearch(mainCamera) : undefined
+              }
               onUpdateFilter={updateFilter}
               setRange={setExportRange}
               setMode={setExportMode}
@@ -883,6 +912,7 @@ export function RecordingView({
                     );
                   }}
                   onClipEnded={onClipEnded}
+                  onClipPrevious={onClipPrevious}
                   onSeekToTime={manuallySetCurrentTime}
                   onControllerReady={(controller) => {
                     mainControllerRef.current = controller;

@@ -47,6 +47,7 @@ type HlsVideoPlayerProps = {
   frigateControls?: boolean;
   inpointOffset?: number;
   onClipEnded?: (currentTime: number) => void;
+  onClipPrevious?: (diff: number) => void;
   onPlayerLoaded?: () => void;
   onTimeUpdate?: (time: number) => void;
   onPlaying?: () => void;
@@ -54,6 +55,7 @@ type HlsVideoPlayerProps = {
   setFullResolution?: React.Dispatch<React.SetStateAction<VideoResolutionType>>;
   onUploadFrame?: (playTime: number) => Promise<AxiosResponse> | undefined;
   getSnapshotUrl?: (playTime: number) => string | undefined;
+  onSnapshot?: (playTime: number) => Promise<void> | void;
   toggleFullscreen?: () => void;
   onError?: (error: RecordingPlayerError) => void;
   isDetailMode?: boolean;
@@ -73,6 +75,7 @@ export default function HlsVideoPlayer({
   frigateControls = true,
   inpointOffset = 0,
   onClipEnded,
+  onClipPrevious,
   onPlayerLoaded,
   onTimeUpdate,
   onPlaying,
@@ -80,6 +83,7 @@ export default function HlsVideoPlayer({
   setFullResolution,
   onUploadFrame,
   getSnapshotUrl,
+  onSnapshot,
   toggleFullscreen,
   onError,
   isDetailMode = false,
@@ -232,6 +236,7 @@ export default function HlsVideoPlayer({
   const [mobileCtrlTimeout, setMobileCtrlTimeout] = useState<NodeJS.Timeout>();
   const [controls, setControls] = useState(isMobile);
   const [controlsOpen, setControlsOpen] = useState(false);
+  const [isSnapshotLoading, setIsSnapshotLoading] = useState(false);
   const [zoomScale, setZoomScale] = useState(1.0);
   const [videoDimensions, setVideoDimensions] = useState<{
     width: number;
@@ -287,6 +292,21 @@ export default function HlsVideoPlayer({
     return currentTime + inpointOffset;
   }, [videoRef, inpointOffset]);
 
+  const handleSnapshot = useCallback(async () => {
+    const frameTime = getVideoTime();
+
+    if (!frameTime || !onSnapshot) {
+      return;
+    }
+
+    setIsSnapshotLoading(true);
+    try {
+      await onSnapshot(frameTime);
+    } finally {
+      setIsSnapshotLoading(false);
+    }
+  }, [getVideoTime, onSnapshot]);
+
   return (
     <TransformWrapper
       minScale={1.0}
@@ -310,6 +330,7 @@ export default function HlsVideoPlayer({
             seek: true,
             playbackRate: true,
             plusUpload: isAdmin && config?.plus?.enabled == true,
+            snapshot: !!onSnapshot,
             fullscreen: supportsFullscreen,
           }}
           setControlsOpen={setControlsOpen}
@@ -320,11 +341,17 @@ export default function HlsVideoPlayer({
           onSeek={(diff) => {
             const currentTime = videoRef.current?.currentTime;
 
-            if (!videoRef.current || !currentTime) {
+            if (!videoRef.current || currentTime == undefined) {
               return;
             }
 
-            videoRef.current.currentTime = Math.max(0, currentTime + diff);
+            const newTime = currentTime + diff;
+
+            if (newTime < 0 && onClipPrevious) {
+              onClipPrevious(diff);
+            } else {
+              videoRef.current.currentTime = Math.max(0, newTime);
+            }
           }}
           onSetPlaybackRate={(rate) => {
             setPlaybackRate(rate, true);
@@ -357,6 +384,8 @@ export default function HlsVideoPlayer({
               }
             }
           }}
+          onSnapshot={onSnapshot ? handleSnapshot : undefined}
+          snapshotLoading={isSnapshotLoading}
           fullscreen={fullscreen}
           toggleFullscreen={toggleFullscreen}
           containerRef={containerRef}

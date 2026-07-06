@@ -10,6 +10,7 @@ import { FrigateConfig } from "@/types/frigateConfig";
 import { JsonObject, JsonValue } from "@/types/configForm";
 import { isJsonObject } from "@/lib/utils";
 import {
+  buildHiddenFieldContext,
   getBaseCameraSectionValue,
   getEffectiveHiddenFields,
   pathMatchesHiddenPattern,
@@ -17,6 +18,7 @@ import {
 } from "@/utils/configUtil";
 import { extractSectionSchema } from "@/hooks/use-config-schema";
 import { applySchemaDefaults } from "@/lib/config-schema";
+import { isReplayCamera } from "@/utils/cameraUtil";
 
 const INTERNAL_FIELD_SUFFIXES = ["enabled_in_config", "raw_mask"];
 
@@ -286,7 +288,7 @@ export function useConfigOverride({
     const hiddenFields = getEffectiveHiddenFields(
       sectionPath,
       "camera",
-      config,
+      buildHiddenFieldContext(config, "camera", cameraName),
     );
     const collapsedGlobal = stripHiddenPaths(
       collapseEmpty(normalizedGlobalValue),
@@ -439,7 +441,11 @@ export function useAllCameraOverrides(
         getBaseCameraSectionValue(config, cameraName, key),
       );
 
-      const hiddenFields = getEffectiveHiddenFields(key, "camera", config);
+      const hiddenFields = getEffectiveHiddenFields(
+        key,
+        "camera",
+        buildHiddenFieldContext(config, "camera", cameraName),
+      );
       const collapsedGlobal = stripHiddenPaths(
         collapseEmpty(globalValue),
         hiddenFields,
@@ -597,9 +603,13 @@ function getEffectiveGlobalBaseline(
       return normalizeConfigValue(defaults as JsonValue);
     }
   }
-  const cameraSectionValues = Object.keys(config.cameras ?? {}).map((name) =>
-    normalizeConfigValue(getBaseCameraSectionValue(config, name, sectionPath)),
-  );
+  const cameraSectionValues = Object.keys(config.cameras ?? {})
+    .filter((name) => !isReplayCamera(name))
+    .map((name) =>
+      normalizeConfigValue(
+        getBaseCameraSectionValue(config, name, sectionPath),
+      ),
+    );
   return deriveSyntheticGlobalValue(cameraSectionValues, compareFields);
 }
 
@@ -679,7 +689,9 @@ export function useCamerasOverridingSection(
     const sectionMeta = OVERRIDABLE_SECTIONS.find((s) => s.key === sectionPath);
     const compareFields = sectionMeta?.compareFields;
 
-    const cameraNames = Object.keys(config.cameras);
+    const cameraNames = Object.keys(config.cameras).filter(
+      (name) => !isReplayCamera(name),
+    );
     const cameraSectionValues = cameraNames.map((name) =>
       normalizeConfigValue(
         getBaseCameraSectionValue(config, name, sectionPath),
@@ -795,7 +807,7 @@ export function useCameraSectionDeltas(
     const hiddenFields = getEffectiveHiddenFields(
       sectionPath,
       "camera",
-      config,
+      buildHiddenFieldContext(config, "camera", cameraName),
     );
 
     const deltas: FieldDelta[] = [];
@@ -864,7 +876,7 @@ export function useProfileSectionDeltas(
     const hiddenFields = getEffectiveHiddenFields(
       sectionPath,
       "camera",
-      config,
+      buildHiddenFieldContext(config, "camera", cameraName),
     );
 
     const deltas: FieldDelta[] = [];

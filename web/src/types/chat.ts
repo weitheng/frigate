@@ -1,14 +1,28 @@
+export type ToolCallFunction = {
+  name: string;
+  arguments: string;
+};
+
+export type WireToolCall = {
+  id: string;
+  type?: string;
+  function: ToolCallFunction;
+};
+
+export type ChatMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: unknown;
+  tool_call_id?: string;
+  name?: string;
+  tool_calls?: WireToolCall[];
+  reasoning?: string;
+  stats?: ChatStats;
+};
+
 export type ToolCall = {
   name: string;
   arguments?: Record<string, unknown>;
   response?: string;
-};
-
-export type ChatMessage = {
-  role: "user" | "assistant";
-  content: string;
-  toolCalls?: ToolCall[];
-  stats?: ChatStats;
 };
 
 export type StartingRequest = {
@@ -24,3 +38,11 @@ export type ChatStats = {
 };
 
 export type ShowStatsMode = "while_generating" | "always";
+
+export type GenAIProviderInfo = {
+  models: string[];
+  roles: string[];
+  supports_toggleable_thinking: boolean;
+};
+
+export type GenAIModelsResponse = Record<string, GenAIProviderInfo>;
