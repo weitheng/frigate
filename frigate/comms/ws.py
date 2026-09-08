@@ -4,7 +4,8 @@ import errno
 import json
 import logging
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 from wsgiref.simple_server import make_server
 
 from ws4py.server.wsgirefserver import (
@@ -22,7 +23,6 @@ from frigate.const import (
     EXPIRE_AUDIO_ACTIVITY,
     INSERT_MANY_RECORDINGS,
     INSERT_PREVIEW,
-    NOTIFICATION_TEST,
     REQUEST_REGION_GRID,
     UPDATE_AUDIO_ACTIVITY,
     UPDATE_AUDIO_TRANSCRIPTION_STATE,
@@ -56,7 +56,6 @@ _WS_BLOCKED_TOPICS = frozenset(
         UPDATE_EMBEDDINGS_REINDEX_PROGRESS,
         UPDATE_BIRDSEYE_LAYOUT,
         UPDATE_AUDIO_TRANSCRIPTION_STATE,
-        NOTIFICATION_TEST,
     }
 )
 

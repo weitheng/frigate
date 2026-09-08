@@ -55,7 +55,7 @@ Frigate supports multiple different detectors that work on different types of ha
 **Most Hardware**
 
 - [Hailo](#hailo-8): The Hailo8 and Hailo8L AI Acceleration module is available in m.2 format with a HAT for RPi devices offering a wide range of compatibility with devices.
-  - [Supports many model architectures](../../configuration/object_detectors#configuration)
+  - [Supports many model architectures](../../configuration/object_detectors#configuration-hailo)
   - Runs best with tiny or small size models
 
 - [Google Coral EdgeTPU](#google-coral-tpu): The Google Coral EdgeTPU is available in USB and m.2 format allowing for a wide range of compatibility with devices.
@@ -111,14 +111,14 @@ Frigate supports multiple different detectors that work on different types of ha
 
 ### Hailo-8
 
-Frigate supports both the Hailo-8 and Hailo-8L AI Acceleration Modules on compatible hardware platforms—including the Raspberry Pi 5 with the PCIe hat from the AI kit. The Hailo detector integration in Frigate automatically identifies your hardware type and selects the appropriate default model when a custom model isn’t provided.
+Frigate supports both the Hailo-8 and Hailo-8L AI Acceleration Modules on compatible hardware platforms, including the Raspberry Pi 5 with the PCIe hat from the AI kit. The Hailo detector integration in Frigate automatically identifies your hardware type and selects the appropriate default model when a custom model isn’t provided.
 
 **Default Model Configuration:**
 
 - **Hailo-8L:** Default model is **YOLOv6n**.
 - **Hailo-8:** Default model is **YOLOv6n**.
 
-In real-world deployments, even with multiple cameras running concurrently, Frigate has demonstrated consistent performance. Testing on x86 platforms—with dual PCIe lanes—yields further improvements in FPS, throughput, and latency compared to the Raspberry Pi setup.
+In real-world deployments, even with multiple cameras running concurrently, Frigate has demonstrated consistent performance. Testing on x86 platforms, with dual PCIe lanes, yields further improvements in FPS, throughput, and latency compared to the Raspberry Pi setup.
 
 | Name             | Hailo‑8 Inference Time | Hailo‑8L Inference Time |
 | ---------------- | ---------------------- | ----------------------- |

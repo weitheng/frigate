@@ -5,7 +5,7 @@ import math
 import os
 from collections import defaultdict
 from statistics import median
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 import cv2
 import numpy as np
@@ -54,6 +54,11 @@ class TrackedObject:
         self.obj_data = obj_data
         self.colormap = model_config.colormap
         self.logos = model_config.all_attribute_logos
+        self.thumbnail_attributes = [
+            attr
+            for attr in model_config.attributes_map.get(obj_data["label"], [])
+            if attr in model_config.non_logo_attributes
+        ]
         self.camera_config = camera_config
         self.ui_config = ui_config
         self.frame_cache = frame_cache
@@ -81,7 +86,7 @@ class TrackedObject:
         self.previous = self.to_dict()
 
     @property
-    def max_severity(self) -> Optional[str]:
+    def max_severity(self) -> str | None:
         review_config = self.camera_config.review
 
         if (
@@ -149,7 +154,7 @@ class TrackedObject:
         if not self.false_positive and has_valid_frame:
             # determine if this frame is a better thumbnail
             if self.thumbnail_data is None or is_better_thumbnail(
-                self.obj_data["label"],
+                self.thumbnail_attributes,
                 self.thumbnail_data,
                 obj_data,
                 self.camera_config.frame_shape,
@@ -590,7 +595,7 @@ class TrackedObjectAttribute:
             "box": self.box,
         }
 
-    def find_best_object(self, objects: list[dict[str, Any]]) -> Optional[str]:
+    def find_best_object(self, objects: list[dict[str, Any]]) -> str | None:
         """Find the best attribute for each object and return its ID."""
         best_object_area: float | None = None
         best_object_id: str | None = None

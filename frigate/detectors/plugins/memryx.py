@@ -5,11 +5,11 @@ import shutil
 import urllib.request
 import zipfile
 from queue import Queue
+from typing import Literal
 
 import cv2
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
-from typing_extensions import Literal
 
 from frigate.detectors.detection_api import DetectionApi
 from frigate.detectors.detector_config import (
@@ -17,6 +17,7 @@ from frigate.detectors.detector_config import (
     ModelTypeEnum,
 )
 from frigate.util.file import FileLock
+from frigate.util.model import xyxy_to_xywh_for_nms
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class MemryXDetector(DetectionApi):
         except ModuleNotFoundError:
             raise ImportError(
                 "MemryX SDK is not installed. Install it and set up MIX environment."
-            )
+            ) from None
             return
 
         # Initialize stop_event as None, will be set later by set_stop_event()
@@ -581,7 +582,7 @@ class MemryXDetector(DetectionApi):
             # Convert coordinates to integers
             x_min, y_min, x_max, y_max = map(int, [x_min, y_min, x_max, y_max])
 
-            # Append valid detections [class_id, confidence, x, y, width, height]
+            # Append valid detections [class_id, confidence, x_min, y_min, x_max, y_max]
             detections.append([class_id, confidence, x_min, y_min, x_max, y_max])
 
         final_detections = np.zeros((20, 6), np.float32)
@@ -595,7 +596,7 @@ class MemryXDetector(DetectionApi):
         detections = np.array(detections, dtype=np.float32)
 
         # Apply Non-Maximum Suppression (NMS)
-        bboxes = detections[:, 2:6].tolist()  # (x_min, y_min, width, height)
+        bboxes = xyxy_to_xywh_for_nms(detections[:, 2:6])
         scores = detections[:, 1].tolist()  # Confidence scores
 
         indices = cv2.dnn.NMSBoxes(bboxes, scores, 0.45, 0.5)

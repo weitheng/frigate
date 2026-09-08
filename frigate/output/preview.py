@@ -159,6 +159,8 @@ class FFMpegConverter(threading.Thread):
                 f"duration {self.frame_times[t_idx + 1] - self.frame_times[t_idx]}"
             )
 
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+
         try:
             p = sp.run(
                 self.ffmpeg_cmd.split(" "),
@@ -251,7 +253,7 @@ class PreviewRecorder:
 
         # end segment at end of hour (use UTC to avoid DST issues)
         self.segment_end = (
-            (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1))
+            (datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1))
             .replace(minute=0, second=0, microsecond=0)
             .timestamp()
         )
@@ -263,7 +265,7 @@ class PreviewRecorder:
 
         # check for existing items in cache
         start_ts = (
-            datetime.datetime.now(datetime.timezone.utc)
+            datetime.datetime.now(datetime.UTC)
             .replace(minute=0, second=0, microsecond=0)
             .timestamp()
         )
@@ -298,7 +300,7 @@ class PreviewRecorder:
     def reset_frame_cache(self, frame_time: float) -> None:
         self.segment_end = (
             (
-                datetime.datetime.fromtimestamp(frame_time, tz=datetime.timezone.utc)
+                datetime.datetime.fromtimestamp(frame_time, tz=datetime.UTC)
                 + datetime.timedelta(hours=1)
             )
             .replace(minute=0, second=0, microsecond=0)

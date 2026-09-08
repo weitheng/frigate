@@ -7,13 +7,14 @@ import string
 import time
 import zipfile
 from collections import deque
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator, List, Optional
+from urllib.parse import quote
 
 import psutil
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pathvalidate import sanitize_filename, sanitize_filepath
+from pathvalidate import sanitize_filename
 from peewee import DoesNotExist
 from playhouse.shortcuts import model_to_dict
 
@@ -68,10 +69,12 @@ from frigate.jobs.export import (
 from frigate.models import Export, ExportCase, Previews, Recordings
 from frigate.record.export import (
     DEFAULT_TIME_LAPSE_FFMPEG_ARGS,
+    DEFAULT_TIME_LAPSE_FFMPEG_INPUT_ARGS,
     ChaptersEnum,
     PlaybackSourceEnum,
     validate_ffmpeg_args,
 )
+from frigate.util.path import sanitize_contained_path
 from frigate.util.time import is_current_hour
 
 logger = logging.getLogger(__name__)
@@ -89,7 +92,7 @@ def _generate_export_id(camera_name: str) -> str:
 
 def _create_export_case_record(
     name: str,
-    description: Optional[str],
+    description: str | None,
 ) -> ExportCase:
     now = datetime.datetime.fromtimestamp(time.time())
     return ExportCase.create(
@@ -101,7 +104,7 @@ def _create_export_case_record(
     )
 
 
-def _validate_camera_name(request: Request, camera_name: str) -> Optional[JSONResponse]:
+def _validate_camera_name(request: Request, camera_name: str) -> JSONResponse | None:
     if camera_name and request.app.frigate_config.cameras.get(camera_name):
         return None
 
@@ -111,7 +114,7 @@ def _validate_camera_name(request: Request, camera_name: str) -> Optional[JSONRe
     )
 
 
-def _validate_export_case(export_case_id: Optional[str]) -> Optional[JSONResponse]:
+def _validate_export_case(export_case_id: str | None) -> JSONResponse | None:
     if export_case_id is None:
         return None
 
@@ -127,20 +130,14 @@ def _validate_export_case(export_case_id: Optional[str]) -> Optional[JSONRespons
 
 
 def _sanitize_existing_image(
-    image_path: Optional[str],
-) -> tuple[Optional[str], Optional[JSONResponse]]:
-    # sanitize_filepath normalizes "\" to "/" but leaves ".." intact, so a path
-    # like "clips\..\..\etc/passwd" passes the CLIPS_DIR prefix check yet still
-    # escapes the directory once resolved. A valid snapshot path never uses "..".
-    if image_path and ".." in image_path:
-        return None, JSONResponse(
-            content={"success": False, "message": "Invalid image path"},
-            status_code=400,
-        )
+    image_path: str | None,
+) -> tuple[str | None, JSONResponse | None]:
+    if not image_path:
+        return None, None
 
-    existing_image = sanitize_filepath(image_path) if image_path else None
+    existing_image = sanitize_contained_path(image_path, CLIPS_DIR)
 
-    if existing_image and not existing_image.startswith(CLIPS_DIR):
+    if existing_image is None:
         return None, JSONResponse(
             content={"success": False, "message": "Invalid image path"},
             status_code=400,
@@ -154,7 +151,7 @@ def _validate_export_source(
     start_time: float,
     end_time: float,
     playback_source: PlaybackSourceEnum,
-) -> Optional[str]:
+) -> str | None:
     if playback_source == PlaybackSourceEnum.recordings:
         recordings_count = (
             Recordings.select()
@@ -257,14 +254,14 @@ def _build_export_job(
     camera_name: str,
     start_time: float,
     end_time: float,
-    friendly_name: Optional[str],
-    existing_image: Optional[str],
+    friendly_name: str | None,
+    existing_image: str | None,
     playback_source: PlaybackSourceEnum,
-    export_case_id: Optional[str],
-    ffmpeg_input_args: Optional[str] = None,
-    ffmpeg_output_args: Optional[str] = None,
+    export_case_id: str | None,
+    ffmpeg_input_args: str | None = None,
+    ffmpeg_output_args: str | None = None,
     cpu_fallback: bool = False,
-    chapters: Optional[ChaptersEnum] = None,
+    chapters: ChaptersEnum | None = None,
 ) -> ExportJob:
     return ExportJob(
         id=_generate_export_id(camera_name),
@@ -302,11 +299,11 @@ def _export_case_to_dict(case: ExportCase) -> dict[str, object]:
     Returns a list of exports ordered by date (most recent first).""",
 )
 def get_exports(
-    allowed_cameras: List[str] = Depends(get_allowed_cameras_for_filter),
-    export_case_id: Optional[str] = None,
-    cameras: Optional[str] = Query(default="all"),
-    start_date: Optional[float] = None,
-    end_date: Optional[float] = None,
+    allowed_cameras: list[str] = Depends(get_allowed_cameras_for_filter),
+    export_case_id: str | None = None,
+    cameras: str | None = Query(default="all"),
+    start_date: float | None = None,
+    end_date: float | None = None,
 ):
     query = Export.select().where(Export.camera << allowed_cameras)
 
@@ -422,7 +419,7 @@ def _unique_archive_name(export: Export, used: set[str]) -> str:
     return candidate
 
 
-def _stream_case_archive(exports: List[Export]) -> Iterator[bytes]:
+def _stream_case_archive(exports: list[Export]) -> Iterator[bytes]:
     """Yield bytes of a zip archive built from the given exports' mp4 files."""
     buffer = _StreamingZipBuffer()
     used_names: set[str] = set()
@@ -458,6 +455,22 @@ def _stream_case_archive(exports: List[Export]) -> Iterator[bytes]:
     yield from buffer.drain()
 
 
+def _content_disposition(filename: str, ascii_fallback: str) -> str:
+    """Build an attachment Content-Disposition that survives non-ASCII names.
+
+    Header values are encoded as latin-1, so a name outside that range cannot
+    go in filename at all. RFC 6266 handles this with a pair: a plain ASCII
+    filename for old clients, plus a percent-encoded UTF-8 filename* that
+    every current browser prefers.
+    """
+    ascii_name = filename if filename.isascii() else ascii_fallback
+
+    return (
+        f'attachment; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(filename, safe='')}"
+    )
+
+
 @router.get(
     "/cases/{case_id}/download",
     dependencies=[Depends(allow_any_authenticated())],
@@ -466,7 +479,7 @@ def _stream_case_archive(exports: List[Export]) -> Iterator[bytes]:
 )
 def download_export_case(
     case_id: str,
-    allowed_cameras: List[str] = Depends(get_allowed_cameras_for_filter),
+    allowed_cameras: list[str] = Depends(get_allowed_cameras_for_filter),
 ):
     try:
         case = ExportCase.get(ExportCase.id == case_id)
@@ -500,7 +513,9 @@ def download_export_case(
         _stream_case_archive(exports),
         media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="{archive_base}.zip"',
+            "Content-Disposition": _content_disposition(
+                f"{archive_base}.zip", f"{case_id}.zip"
+            ),
         },
     )
 
@@ -580,7 +595,7 @@ def delete_export_case(case_id: str, request: Request, delete_exports: bool = Fa
 )
 def get_active_export_jobs(
     request: Request,
-    allowed_cameras: List[str] = Depends(get_allowed_cameras_for_filter),
+    allowed_cameras: list[str] = Depends(get_allowed_cameras_for_filter),
 ):
     jobs = list_active_export_jobs(request.app.frigate_config)
     return JSONResponse(
@@ -622,7 +637,7 @@ async def get_export_job_status(export_id: str, request: Request):
 def export_recordings_batch(
     request: Request,
     body: BatchExportBody,
-    allowed_cameras: List[str] = Depends(get_allowed_cameras_for_filter),
+    allowed_cameras: list[str] = Depends(get_allowed_cameras_for_filter),
     current_user: dict = Depends(get_current_user),
 ):
     if isinstance(current_user, JSONResponse):
@@ -662,7 +677,7 @@ def export_recordings_batch(
 
     # Sanitize each item's image_path up front. A bad path in any item
     # kills the whole request, consistent with single-export behavior.
-    sanitized_images: list[Optional[str]] = []
+    sanitized_images: list[str | None] = []
     for item in body.items:
         existing_image, image_validation_error = _sanitize_existing_image(
             item.image_path
@@ -713,7 +728,7 @@ def export_recordings_batch(
         export_case_id = export_case.id
 
     export_ids: list[str] = []
-    results: list[dict[str, Optional[str] | bool | int]] = []
+    results: list[dict[str, str | None | bool | int]] = []
     for index, item in enumerate(body.items):
         if index in item_errors:
             results.append(
@@ -998,7 +1013,7 @@ def export_recording_custom(
 
     # Set default values if not provided (timelapse defaults)
     if ffmpeg_input_args is None:
-        ffmpeg_input_args = ""
+        ffmpeg_input_args = DEFAULT_TIME_LAPSE_FFMPEG_INPUT_ARGS
 
     if ffmpeg_output_args is None:
         ffmpeg_output_args = DEFAULT_TIME_LAPSE_FFMPEG_ARGS

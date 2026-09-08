@@ -6,7 +6,8 @@ import logging
 import os
 import re
 import time
-from typing import Any, AsyncGenerator, Callable, Optional
+from collections.abc import AsyncGenerator, Callable
+from typing import Any
 
 import numpy as np
 from pydantic import ValidationError
@@ -22,6 +23,7 @@ from frigate.genai.prompts import (
     build_review_summary_prompt,
 )
 from frigate.models import Event
+from frigate.util.builtin import has_non_finite_number
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +165,15 @@ class GenAIClient:
                 except json.JSONDecodeError as je:
                     logger.error("Failed to parse review description JSON: %s", je)
                     return None
+
+                # model_construct skips validation, so non-finite numbers that
+                # the validated path would have rejected have to be caught here
+                if has_non_finite_number(raw):
+                    logger.error(
+                        "Discarding review description containing non-finite numbers."
+                    )
+                    return None
+
                 # observations and confidence are required on the model; fill an empty default
                 # if the response omitted it so attribute access stays safe.
                 raw.setdefault("observations", [])
@@ -235,7 +246,7 @@ class GenAIClient:
         camera_config: CameraConfig,
         thumbnails: list[bytes],
         event: Event,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Generate a description for the frame."""
         try:
             prompt = build_object_description_prompt(camera_config, event)
@@ -254,9 +265,9 @@ class GenAIClient:
         self,
         prompt: str,
         images: list[bytes],
-        response_format: Optional[dict] = None,
+        response_format: dict | None = None,
         enable_thinking: bool = False,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Submit a request to the provider.
 
         ``enable_thinking`` is honored only by providers that report
@@ -278,6 +289,11 @@ class GenAIClient:
     @property
     def supports_toggleable_thinking(self) -> bool:
         """Whether the configured model exposes a per-request thinking toggle."""
+        return False
+
+    @property
+    def supports_embeddings(self) -> bool:
+        """Whether the configured model can generate embeddings via embed()."""
         return False
 
     def list_models(self) -> list[str]:
@@ -321,9 +337,9 @@ class GenAIClient:
     def chat_with_tools(
         self,
         messages: list[dict[str, Any]],
-        tools: Optional[list[dict[str, Any]]] = None,
-        tool_choice: Optional[str] = "auto",
-        enable_thinking: Optional[bool] = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = "auto",
+        enable_thinking: bool | None = None,
     ) -> dict[str, Any]:
         """
         Send chat messages to LLM with optional tool definitions.
@@ -395,9 +411,9 @@ class GenAIClient:
     async def chat_with_tools_stream(
         self,
         messages: list[dict[str, Any]],
-        tools: Optional[list[dict[str, Any]]] = None,
-        tool_choice: Optional[str] = "auto",
-        enable_thinking: Optional[bool] = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = "auto",
+        enable_thinking: bool | None = None,
     ) -> AsyncGenerator[tuple[str, Any], None]:
         """Streaming counterpart to `chat_with_tools`.
 

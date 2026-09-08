@@ -30,6 +30,7 @@ const sidebars: SidebarsConfig = {
     ],
     Configuration: [
       "configuration/config",
+      "configuration/config_overrides",
       {
         type: "category",
         label: "Detectors",
@@ -132,7 +133,7 @@ const sidebars: SidebarsConfig = {
           {
             type: "link",
             label: "Go2RTC Configuration Reference",
-            href: "https://github.com/AlexxIT/go2rtc/tree/v1.9.13#configuration",
+            href: "https://github.com/AlexxIT/go2rtc/tree/v1.9.14#configuration",
           } as PropSidebarItemLink,
         ],
       },
@@ -165,6 +166,7 @@ const sidebars: SidebarsConfig = {
     ],
     Troubleshooting: [
       "troubleshooting/faqs",
+      "troubleshooting/common_errors",
       "troubleshooting/go2rtc",
       "troubleshooting/recordings",
       "troubleshooting/dummy-camera",

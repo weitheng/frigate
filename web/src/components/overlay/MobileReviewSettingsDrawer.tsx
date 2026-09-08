@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { baseUrl } from "@/api/baseUrl";
 import { Drawer, DrawerContent, DrawerTrigger } from "../ui/drawer";
 import { Button } from "../ui/button";
@@ -30,6 +30,7 @@ import { useNavigate } from "react-router-dom";
 import { StartExportResponse } from "@/types/export";
 import { ShareTimestampContent } from "./ShareTimestampDialog";
 import { useIsAdmin } from "@/hooks/use-is-admin";
+import { cn } from "@/lib/utils";
 
 type DrawerMode =
   | "none"
@@ -64,6 +65,7 @@ type MobileReviewSettingsDrawerProps = {
   filter?: ReviewFilter;
   currentSeverity?: ReviewSeverity;
   latestTime: number;
+  earliestTime: number;
   currentTime: number;
   range?: TimeRange;
   mode: ExportMode;
@@ -89,6 +91,7 @@ export default function MobileReviewSettingsDrawer({
   filter,
   currentSeverity,
   latestTime,
+  earliestTime,
   currentTime,
   range,
   mode,
@@ -141,7 +144,22 @@ export default function MobileReviewSettingsDrawer({
   );
   const [singleNewCaseName, setSingleNewCaseName] = useState("");
   const [singleNewCaseDescription, setSingleNewCaseDescription] = useState("");
+  const [batchCaseSelection, setBatchCaseSelection] = useState("new");
+  const [newCaseName, setNewCaseName] = useState("");
+  const [newCaseDescription, setNewCaseDescription] = useState("");
   const [isStartingExport, setIsStartingExport] = useState(false);
+  const preTimelineRangeRef = useRef<TimeRange | undefined>(undefined);
+
+  const onSelectFromTimeline = useCallback(
+    (initialRange: TimeRange) => {
+      preTimelineRangeRef.current = range;
+      setRange(initialRange);
+      setMode("timeline_multi");
+      setDrawerMode("none");
+    },
+    [range, setMode, setRange],
+  );
+
   const onStartExport = useCallback(async () => {
     if (isStartingExport) {
       return false;
@@ -149,7 +167,7 @@ export default function MobileReviewSettingsDrawer({
 
     if (!range) {
       toast.error(
-        t("export.toast.error.noVaildTimeSelected", {
+        t("export.toast.error.noValidTimeSelected", {
           ns: "components/dialog",
         }),
         {
@@ -213,6 +231,9 @@ export default function MobileReviewSettingsDrawer({
       setSelectedCaseId(undefined);
       setSingleNewCaseName("");
       setSingleNewCaseDescription("");
+      setBatchCaseSelection("new");
+      setNewCaseName("");
+      setNewCaseDescription("");
       setRange(undefined);
       setMode("none");
       return true;
@@ -432,12 +453,16 @@ export default function MobileReviewSettingsDrawer({
     content = (
       <ExportContent
         latestTime={latestTime}
+        earliestTime={earliestTime}
         currentTime={currentTime}
         range={range}
         name={name}
         selectedCaseId={selectedCaseId}
         singleNewCaseName={singleNewCaseName}
         singleNewCaseDescription={singleNewCaseDescription}
+        batchCaseSelection={batchCaseSelection}
+        newCaseName={newCaseName}
+        newCaseDescription={newCaseDescription}
         activeTab={exportTab}
         isStartingExport={isStartingExport}
         onStartExport={onStartExport}
@@ -446,6 +471,9 @@ export default function MobileReviewSettingsDrawer({
         setSelectedCaseId={setSelectedCaseId}
         setSingleNewCaseName={setSingleNewCaseName}
         setSingleNewCaseDescription={setSingleNewCaseDescription}
+        setBatchCaseSelection={setBatchCaseSelection}
+        setNewCaseName={setNewCaseName}
+        setNewCaseDescription={setNewCaseDescription}
         setRange={setRange}
         setMode={(mode) => {
           setMode(mode);
@@ -454,12 +482,16 @@ export default function MobileReviewSettingsDrawer({
             setDrawerMode("none");
           }
         }}
+        onSelectFromTimeline={onSelectFromTimeline}
         onCancel={() => {
           setMode("none");
           setRange(undefined);
           setSelectedCaseId(undefined);
           setSingleNewCaseName("");
           setSingleNewCaseDescription("");
+          setBatchCaseSelection("new");
+          setNewCaseName("");
+          setNewCaseDescription("");
           setExportTab("export");
           setDrawerMode("select");
         }}
@@ -518,9 +550,9 @@ export default function MobileReviewSettingsDrawer({
   } else if (drawerMode == "filter") {
     content = (
       <div className="scrollbar-container flex h-auto w-full flex-col overflow-y-auto overflow-x-hidden">
-        <div className="relative mb-2 h-8 w-full">
+        <div className="relative mb-4 h-8 w-full">
           <div
-            className="absolute left-0 text-selected"
+            className="absolute left-4 text-selected"
             onClick={() => setDrawerMode("select")}
           >
             {t("button.back", { ns: "common" })}
@@ -548,6 +580,7 @@ export default function MobileReviewSettingsDrawer({
             onUpdateFilter(resetFilter);
           }}
           onClose={() => setDrawerMode("select")}
+          contentClassName="px-4"
         />
       </div>
     );
@@ -637,6 +670,14 @@ export default function MobileReviewSettingsDrawer({
           void onStartExport();
         }}
         onCancel={() => {
+          if (mode == "timeline_multi") {
+            setRange(preTimelineRangeRef.current);
+            setExportTab("multi");
+            setMode("select");
+            setDrawerMode("export");
+            return;
+          }
+
           setExportTab("export");
           setRange(undefined);
           setMode("none");
@@ -685,7 +726,14 @@ export default function MobileReviewSettingsDrawer({
           </Button>
         </DrawerTrigger>
         <DrawerContent
-          className={`mx-1 flex max-h-[80dvh] flex-col items-center gap-2 rounded-t-2xl px-4 pb-4 ${drawerMode == "export" || drawerMode == "debug-replay" ? "overflow-visible" : "overflow-hidden"}`}
+          className={cn(
+            "mx-1 flex max-h-[80dvh] flex-col items-center gap-2 rounded-t-2xl pb-4",
+            // the filter content pads itself so its scrollbar reaches the drawer edge
+            drawerMode != "filter" && "px-4",
+            drawerMode == "export" || drawerMode == "debug-replay"
+              ? "overflow-visible"
+              : "overflow-hidden",
+          )}
         >
           {content}
         </DrawerContent>

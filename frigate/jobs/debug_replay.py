@@ -66,7 +66,7 @@ class DebugReplayJob(Job):
     replay_camera_name: str = ""
     start_ts: float = 0.0
     end_ts: float = 0.0
-    current_step: Optional[str] = None
+    current_step: str | None = None
     progress_percent: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -113,6 +113,10 @@ def query_recordings(source_camera: str, start_ts: float, end_ts: float) -> Mode
         .order_by(Recordings.start_time.asc())
     )
     return cast(ModelSelect, query)
+
+
+class NoRecordingsError(ValueError):
+    """Raised when no recordings exist in the requested time range."""
 
 
 class DebugReplaySource(ABC):
@@ -187,7 +191,7 @@ class RecordingDebugReplaySource(DebugReplaySource):
             raise ValueError("End time must be after start time")
 
         if not query_recordings(self._camera, self._start_ts, self._end_ts).count():
-            raise ValueError(
+            raise NoRecordingsError(
                 f"No recordings found for camera '{self._camera}' in the specified time range"
             )
 
@@ -255,7 +259,7 @@ class DebugReplayJobRunner(threading.Thread):
         frigate_config: FrigateConfig,
         config_publisher: CameraConfigUpdatePublisher,
         replay_manager: "DebugReplayManager",
-        publisher: Optional[JobStatePublisher] = None,
+        publisher: JobStatePublisher | None = None,
     ) -> None:
         super().__init__(daemon=True, name=f"debug_replay_{job.id}")
         self.job = job

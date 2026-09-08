@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import re
-from typing import Optional
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -36,6 +35,7 @@ from frigate.comms.event_metadata_updater import (
 )
 from frigate.config import FrigateConfig
 from frigate.config.camera.updater import CameraConfigUpdatePublisher
+from frigate.config.holder import ConfigHolder
 from frigate.config.profile_manager import ProfileManager
 from frigate.debug_replay import DebugReplayManager, debug_replay_auto_stop_watchdog
 from frigate.embeddings import EmbeddingsContext
@@ -64,7 +64,7 @@ class RemoteUserPlugin(Plugin):
 def create_fastapi_app(
     frigate_config: FrigateConfig,
     database: SqliteQueueDatabase,
-    embeddings: Optional[EmbeddingsContext],
+    embeddings: EmbeddingsContext | None,
     detected_frames_processor,
     storage_maintainer: StorageMaintainer,
     onvif: OnvifController,
@@ -72,9 +72,10 @@ def create_fastapi_app(
     event_metadata_updater: EventMetadataPublisher,
     config_publisher: CameraConfigUpdatePublisher,
     replay_manager: DebugReplayManager,
-    dispatcher: Optional[Dispatcher] = None,
-    profile_manager: Optional[ProfileManager] = None,
+    dispatcher: Dispatcher | None = None,
+    profile_manager: ProfileManager | None = None,
     enforce_default_admin: bool = True,
+    config_holder: ConfigHolder | None = None,
 ):
     logger.info("Starting FastAPI app")
     app = FastAPI(
@@ -151,6 +152,8 @@ def create_fastapi_app(
     app.include_router(debug_replay.router)
     # App Properties
     app.frigate_config = frigate_config
+    # snapshot the port nginx bound at startup, the live config can be swapped
+    app.auth_internal_port = frigate_config.networking.listen.internal_port
     app.genai_manager = GenAIClientManager(frigate_config)
     app.embeddings = embeddings
     app.detected_frames_processor = detected_frames_processor
@@ -163,6 +166,7 @@ def create_fastapi_app(
     app.replay_manager = replay_manager
     app.dispatcher = dispatcher
     app.profile_manager = profile_manager
+    app.config_holder = config_holder
 
     if frigate_config.auth.enabled:
         secret = get_jwt_secret()

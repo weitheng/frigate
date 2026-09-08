@@ -8,11 +8,11 @@ import ConfigTabs from '@site/src/components/ConfigTabs';
 import TabItem from '@theme/TabItem';
 import NavPath from '@site/src/components/NavPath';
 import ModelConfigDropdown from '@site/src/components/ModelConfigDropdown';
-import objectDetectorsModels from '@site/data/object_detectors_models.json';
+import objectDetectorsModels from '@site/data/object_detectors_models.yaml';
 
 ### Supported hardware
 
-Object detection is what allows Frigate to identify _what_ is in your camera's view — people, cars, animals, and more — rather than just reacting to pixel changes. When Frigate's motion detection finds activity in a frame, that region is sent to an **object detector**, which returns the objects it recognizes along with their location and a confidence score. These detections are what drive tracked objects, alerts, detections, and notifications.
+Object detection is what allows Frigate to identify _what_ is in your camera's view (people, cars, animals, and more) rather than just reacting to pixel changes. When Frigate's motion detection finds activity in a frame, that region is sent to an **object detector**, which returns the objects it recognizes along with their location and a confidence score. These detections are what drive tracked objects, alerts, detections, and notifications.
 
 Object detection is computationally intensive, so Frigate is designed to run it on a dedicated AI accelerator or GPU rather than the CPU. A **detector** is the specific hardware-and-model backend Frigate uses to run inference. Choosing a detector that matches your hardware is one of the most important steps in getting good performance, and the right choice depends on what device Frigate is running on.
 
@@ -24,7 +24,6 @@ Frigate supports multiple different detectors that work on different types of ha
 - [Coral EdgeTPU](#edge-tpu-detector): The Google Coral EdgeTPU is available in USB, Mini PCIe, and m.2 formats allowing for a wide range of compatibility with devices.
 - [Hailo](#hailo-8): The Hailo8 and Hailo8L AI Acceleration module is available in m.2 format with a HAT for RPi devices, offering a wide range of compatibility with devices.
 - <CommunityBadge /> [MemryX](#memryx-mx3): The MX3 Acceleration module is available in m.2 format, offering broad compatibility across various platforms.
-- <CommunityBadge /> [DeGirum](#degirum): Service for using hardware devices in the cloud or locally. Hardware and models provided on the cloud on [their website](https://hub.degirum.com).
 
 **AMD**
 
@@ -79,15 +78,15 @@ This does not affect using hardware for accelerating other tasks such as [semant
 
 Along with picking a detector for your hardware, you will choose a model's **input resolution** (such as `320x320` or `640x640`) and, for model families like YOLOv9, a **variant size** (`tiny`, `small`, etc.). Both affect the balance between accuracy and the inference time your hardware can sustain.
 
-**Resolution (320x320 vs 640x640):** Frigate is optimized for `320x320` models, and `320x320` is the best choice for the vast majority of setups. Frigate is specifically designed to compensate for the smaller model by cropping a region of motion from the full frame and zooming into it before running detection, so a `320x320` model is actually _better_ at small and distant objects — not worse. A `640x640` model is slower and uses more resources, and its main benefit is fitting more objects into a single inference when many objects are spread across a large area. Recent versions of Frigate have improved support for `640x640` models, but `320x320` remains the recommended starting point for nearly all setups.
+**Resolution (320x320 vs 640x640):** Frigate is optimized for `320x320` models, and `320x320` is the best choice for the vast majority of setups. Frigate is specifically designed to compensate for the smaller model by cropping a region of motion from the full frame and zooming into it before running detection, so a `320x320` model is actually _better_ at small and distant objects, not worse. A `640x640` model is slower and uses more resources, and its main benefit is fitting more objects into a single inference when many objects are spread across a large area. Recent versions of Frigate have improved support for `640x640` models, but `320x320` remains the recommended starting point for nearly all setups.
 
-**Variant size (tiny/small/medium):** Larger variants are gradually more accurate but slower. Whether the difference is noticeable depends on your specific cameras and scenes. A good rule of thumb is to use the largest model your hardware can run without skipping detections, which you can monitor on the <NavPath path="System > Metrics > Cameras" /> page in the UI — better accuracy only helps if your detector keeps up with the detection load across all cameras.
+**Variant size (tiny/small/medium):** Larger variants are gradually more accurate but slower. Whether the difference is noticeable depends on your specific cameras and scenes. A good rule of thumb is to use the largest model your hardware can run without skipping detections, which you can monitor on the <NavPath path="System > Metrics > Cameras" /> page in the UI. Better accuracy only helps if your detector keeps up with the detection load across all cameras.
 
 **Acceptable inference time depends on your hardware.** Inference time alone does not tell the whole story, because different hardware has different capacity. A GPU can run multiple instances of the same model concurrently, so an inference time around 30ms can still keep up with several cameras. A Google Coral runs only a single instance of the model, so it needs a much lower inference time (around 10ms) to keep up.
 
 :::tip
 
-The best detection accuracy comes from a model trained on images that look like what Frigate actually sees — security camera footage cropped to regions of interest. You can train or fine-tune your own model on images like this and run it as a custom model (see the per-detector sections below), but [Frigate+](/plus) makes this much easier by handling the training for you on images submitted from your own cameras. For YOLOv9, the `s` (small) variant at `320x320` resolution is a good place to start.
+The best detection accuracy comes from a model trained on images that look like what Frigate actually sees: security camera footage cropped to regions of interest. You can train or fine-tune your own model on images like this and run it as a custom model (see the per-detector sections below), but [Frigate+](/plus) makes this much easier by handling the training for you on images submitted from your own cameras. For YOLOv9, the `s` (small) variant at `320x320` resolution is a good place to start.
 
 :::
 
@@ -238,7 +237,7 @@ detectors:
 </TabItem>
 </ConfigTabs>
 
-### Configuration
+### Configuration {#configuration-edgetpu}
 
 <ModelConfigDropdown detectorTitle="EdgeTPU" models={objectDetectorsModels.edgeTPU.models} />
 
@@ -256,7 +255,7 @@ If no custom model is provided, the Hailo detector downloads a default model fro
 
 :::
 
-### Configuration
+### Configuration {#configuration-hailo}
 
 When configuring the Hailo detector, you have two options to specify the model: a local **path** or a **URL**.
 If both are provided, the detector will first check for the model at the given local path. If the file is not found, it will download the model from the specified URL. The model file is cached under `/config/model_cache/hailo`.
@@ -298,7 +297,15 @@ detectors:
 
 :::
 
-### Configuration
+### Intel NPU host requirements {#intel-npu-requirements}
+
+The NPU firmware is loaded by the host kernel and is not part of the Frigate image. Everything else the NPU needs is bundled in the container, so host NPU libraries should never be mounted in.
+
+Frigate bundles a specific version of Intel's [linux-npu-driver](https://github.com/intel/linux-npu-driver/releases), and the host firmware must come from that release or a newer one. Firmware older than the bundled driver may fail with `MAPPED_INFERENCE_VERSION is NOT compatible with the ELF`, where `Expected` is the version the firmware supports and `received` is the version the bundled compiler produced. Distributions often package older firmware than the driver Frigate ships, so check the build date on the host with `sudo dmesg | grep -i vpu` and update it there if needed.
+
+Intel NPUs cannot be used under Home Assistant OS, which does not include the NPU firmware.
+
+### Configuration {#configuration-openvino}
 
 <ModelConfigDropdown detectorTitle="OpenVINO" models={objectDetectorsModels.openvino.models} />
 
@@ -308,12 +315,12 @@ detectors:
 
 The NPU in Apple Silicon can't be accessed from within a container, so the [Apple Silicon detector client](https://github.com/frigate-nvr/apple-silicon-detector) must first be setup. It is recommended to use the Frigate docker image with `-standard-arm64` suffix, for example `ghcr.io/blakeblackshear/frigate:stable-standard-arm64`.
 
-### Setup
+### Setup {#setup-apple-silicon}
 
 1. Setup the [Apple Silicon detector client](https://github.com/frigate-nvr/apple-silicon-detector) and run the client
 2. Configure the detector in Frigate and startup Frigate
 
-### Configuration
+### Configuration {#configuration-apple-silicon}
 
 Using the detector config below will connect to the client:
 
@@ -323,7 +330,7 @@ Note that the labelmap uses a subset of the complete COCO label set that has onl
 
 ## AMD/ROCm GPU detector
 
-### Setup
+### Setup {#setup-rocm}
 
 Support for AMD GPUs is provided using the [ONNX detector](#onnx). In order to utilize the AMD GPU for object detection use a frigate docker image with `-rocm` suffix, for example `ghcr.io/blakeblackshear/frigate:stable-rocm`.
 
@@ -401,7 +408,7 @@ We unset the `HSA_OVERRIDE_GFX_VERSION` to prevent an existing override from mes
 $ docker exec -it frigate /bin/bash -c '(unset HSA_OVERRIDE_GFX_VERSION && /opt/rocm/bin/rocminfo |grep gfx)'
 ```
 
-### Configuration
+### Configuration {#configuration-rocm}
 
 :::tip
 
@@ -455,7 +462,7 @@ detectors:
 
 :::
 
-### Configuration
+### Configuration {#configuration-onnx}
 
 <ModelConfigDropdown detectorTitle="ONNX" models={objectDetectorsModels.onnx.models} />
 
@@ -475,7 +482,7 @@ The number of threads used by the interpreter can be specified using the `"num_t
 
 A TensorFlow Lite model is provided in the container at `/cpu_model.tflite` and is used by this detector type by default. To provide your own model, bind mount the file into the container and provide the path with `model.path`.
 
-### Configuration
+### Configuration {#configuration-cpu}
 
 <ModelConfigDropdown detectorTitle="CPU" models={objectDetectorsModels.cpu.models} />
 
@@ -485,13 +492,13 @@ When using CPU detectors, you can add one CPU detector per camera. Adding more d
 
 The Deepstack / CodeProject.AI Server detector for Frigate allows you to integrate Deepstack and CodeProject.AI object detection capabilities into Frigate. CodeProject.AI and DeepStack are open-source AI platforms that can be run on various devices such as the Raspberry Pi, Nvidia Jetson, and other compatible hardware. It is important to note that the integration is performed over the network, so the inference times may not be as fast as native Frigate detectors, but it still provides an efficient and reliable solution for object detection and tracking.
 
-### Setup
+### Setup {#setup-deepstack}
 
 To get started with CodeProject.AI, visit their [official website](https://www.codeproject.com/Articles/5322557/CodeProject-AI-Server-AI-the-easy-way) to follow the instructions to download and install the AI server on your preferred device. Detailed setup instructions for CodeProject.AI are outside the scope of the Frigate documentation.
 
 To integrate CodeProject.AI into Frigate, configure the detector as follows:
 
-### Configuration
+### Configuration {#configuration-deepstack}
 
 <ModelConfigDropdown detectorTitle="DeepStack" models={objectDetectorsModels.deepstack.models} />
 
@@ -509,7 +516,7 @@ See the [installation docs](../frigate/installation.md#memryx-mx3) for informati
 
 To configure a MemryX detector, simply set the `type` attribute to `memryx` and follow the configuration guide below.
 
-### Configuration
+### Configuration {#configuration-memryx}
 
 <ModelConfigDropdown detectorTitle="MemryX" models={objectDetectorsModels.memryx.models} />
 
@@ -646,7 +653,7 @@ This implementation is based on sdk `v1.5.0`.
 
 See the [installation docs](../frigate/installation.md#synaptics) for information on configuring the SL-series NPU hardware.
 
-### Configuration
+### Configuration {#configuration-synaptics}
 
 When configuring the Synap detector, you have to specify the model: a local **path**.
 
@@ -725,7 +732,7 @@ The inference time was determined on a rk3588 with 3 NPU cores.
 
 To convert a onnx model to the rknn format using the [rknn-toolkit2](https://github.com/airockchip/rknn-toolkit2/) you have to:
 
-- Place one ore more models in onnx format in the directory `config/model_cache/rknn_cache/onnx` on your docker host (this might require `sudo` privileges).
+- Place one or more models in onnx format in the directory `config/model_cache/rknn_cache/onnx` on your docker host (this might require `sudo` privileges).
 - Save the configuration file under `config/conv2rknn.yaml` (see below for details).
 - Run `docker exec <frigate_container_id> python3 /opt/conv2rknn.py`. If the conversion was successful, the rknn models will be placed in `config/model_cache/rknn_cache`.
 
@@ -743,98 +750,17 @@ config:
   quant_img_RGB2BGR: true
 ```
 
-Explanation of the paramters:
+Explanation of the parameters:
 
 - `soc`: A list of all SoCs you want to build the rknn model for. If you don't specify this parameter, the script tries to find out your SoC and builds the rknn model for this one.
 - `quantization`: true: 8 bit integer (i8) quantization, false: 16 bit float (fp16). Default: false.
 - `output_name`: The output name of the model. The following variables are available:
   - `quant`: "i8" or "fp16" depending on the config
-  - `input_basename`: the basename of the input model (e.g. "my_model" if the input model is calles "my_model.onnx")
+  - `input_basename`: the basename of the input model (e.g. "my_model" if the input model is called "my_model.onnx")
   - `soc`: the SoC this model was build for (e.g. "rk3588")
   - `tk_version`: Version of `rknn-toolkit2` (e.g. "2.3.0")
   - **example**: Specifying `output_name = "frigate-{quant}-{input_basename}-{soc}-v{tk_version}"` could result in a model called `frigate-i8-my_model-rk3588-v2.3.0.rknn`.
 - `config`: Configuration passed to `rknn-toolkit2` for model conversion. For an explanation of all available parameters have a look at section "2.2. Model configuration" of [this manual](https://github.com/MarcA711/rknn-toolkit2/releases/download/v2.3.2/03_Rockchip_RKNPU_API_Reference_RKNN_Toolkit2_V2.3.2_EN.pdf).
-
-## DeGirum
-
-DeGirum is a detector that can use any type of hardware listed on [their website](https://hub.degirum.com). DeGirum can be used with local hardware through a DeGirum AI Server, or through the use of `@local`. You can also connect directly to DeGirum's AI Hub to run inferences. **Please Note:** This detector _cannot_ be used for commercial purposes.
-
-### Configuration
-
-#### AI Server Inference
-
-Before starting with the config file for this section, you must first launch an AI server. DeGirum has an AI server ready to use as a docker container. Add this to your `docker-compose.yml` to get started:
-
-```yaml
-degirum_detector:
-  container_name: degirum
-  image: degirum/aiserver:latest
-  privileged: true
-  ports:
-    - "8778:8778"
-```
-
-All supported hardware will automatically be found on your AI server host as long as relevant runtimes and drivers are properly installed on your machine. Refer to [DeGirum's docs site](https://docs.degirum.com/pysdk/runtimes-and-drivers) if you have any trouble.
-
-Once completed, configure the detector as follows:
-
-<ModelConfigDropdown detectorTitle="DeGirum" models={objectDetectorsModels.degirumAiServer.models} />
-
-Setting up a model in the `config.yml` is similar to setting up an AI server.
-You can set it to:
-
-- A model listed on the [AI Hub](https://hub.degirum.com), given that the correct zoo name is listed in your detector
-  - If this is what you choose to do, the correct model will be downloaded onto your machine before running.
-- A local directory acting as a zoo. See DeGirum's docs site [for more information](https://docs.degirum.com/pysdk/user-guide-pysdk/organizing-models#model-zoo-directory-structure).
-- A path to some model.json.
-
-```yaml
-model:
-  path: ./mobilenet_v2_ssd_coco--300x300_quant_n2x_orca1_1 # directory to model .json and file
-  width: 300 # width is in the model name as the first number in the "int"x"int" section
-  height: 300 # height is in the model name as the second number in the "int"x"int" section
-  input_pixel_format: rgb/bgr # look at the model.json to figure out which to put here
-```
-
-#### Local Inference
-
-It is also possible to eliminate the need for an AI server and run the hardware directly. The benefit of this approach is that you eliminate any bottlenecks that occur when transferring prediction results from the AI server docker container to the frigate one. However, the method of implementing local inference is different for every device and hardware combination, so it's usually more trouble than it's worth. A general guideline to achieve this would be:
-
-1. Ensuring that the frigate docker container has the runtime you want to use. So for instance, running `@local` for Hailo means making sure the container you're using has the Hailo runtime installed.
-2. To double check the runtime is detected by the DeGirum detector, make sure the `degirum sys-info` command properly shows whatever runtimes you mean to install.
-3. Create a DeGirum detector in your configuration.
-
-<ModelConfigDropdown detectorTitle="DeGirum" models={objectDetectorsModels.degirumLocal.models} />
-
-Once `degirum_detector` is setup, you can choose a model through 'model' section in the `config.yml` file.
-
-```yaml
-model:
-  path: mobilenet_v2_ssd_coco--300x300_quant_n2x_orca1_1
-  width: 300 # width is in the model name as the first number in the "int"x"int" section
-  height: 300 # height is in the model name as the second number in the "int"x"int" section
-  input_pixel_format: rgb/bgr # look at the model.json to figure out which to put here
-```
-
-#### AI Hub Cloud Inference
-
-If you do not possess whatever hardware you want to run, there's also the option to run cloud inferences. Do note that your detection fps might need to be lowered as network latency does significantly slow down this method of detection. For use with Frigate, we highly recommend using a local AI server as described above. To set up cloud inferences,
-
-1. Sign up at [DeGirum's AI Hub](https://hub.degirum.com).
-2. Get an access token.
-3. Create a DeGirum detector in your configuration.
-
-<ModelConfigDropdown detectorTitle="DeGirum" models={objectDetectorsModels.degirumCloud.models} />
-
-Once `degirum_detector` is setup, you can choose a model through 'model' section in the `config.yml` file.
-
-```yaml
-model:
-  path: mobilenet_v2_ssd_coco--300x300_quant_n2x_orca1_1
-  width: 300 # width is in the model name as the first number in the "int"x"int" section
-  height: 300 # height is in the model name as the second number in the "int"x"int" section
-  input_pixel_format: rgb/bgr # look at the model.json to figure out which to put here
-```
 
 ## AXERA
 
@@ -853,7 +779,7 @@ The AXEngine detector downloads its default model from HuggingFace on first star
 
 :::
 
-### Configuration
+### Configuration {#configuration-axengine}
 
 When configuring the AXEngine detector, you have to specify the model name.
 

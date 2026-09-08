@@ -7,7 +7,7 @@ import operator
 import time
 from datetime import datetime
 from functools import reduce
-from typing import Any, Optional
+from typing import Any, Literal
 
 import cv2
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
@@ -37,6 +37,7 @@ from frigate.api.defs.response.chat_response import (
 from frigate.api.defs.tags import Tags
 from frigate.api.event import _build_attribute_filter_clause, events
 from frigate.config import FrigateConfig
+from frigate.config.classification import SemanticSearchModelEnum
 from frigate.genai.prompts import (
     build_chat_system_prompt,
     get_attribute_classifications,
@@ -86,8 +87,21 @@ def get_tools(request: Request) -> JSONResponse:
     tools = get_tool_definitions(
         semantic_search_enabled=semantic_search_enabled,
         attribute_classifications=attribute_classifications,
+        embeddings_language=_embeddings_language(config),
     )
     return JSONResponse(content={"tools": tools})
+
+
+def _embeddings_language(config: FrigateConfig) -> Literal["english", "multi"]:
+    """Return the language capability of the configured embeddings model.
+
+    JinaV1 is English-only; every other option (JinaV2 or a GenAI embeddings
+    provider) handles multiple languages.
+    """
+    if config.semantic_search.model == SemanticSearchModelEnum.jinav1:
+        return "english"
+
+    return "multi"
 
 
 def _resolve_zones(
@@ -98,11 +112,14 @@ def _resolve_zones(
     """Map zone names to their canonical config keys, case-insensitively.
 
     LLMs frequently echo a user's casing ("Front Yard") instead of the
-    configured key ("front_yard"). The downstream zone filter is a SQLite GLOB
-    over the JSON-encoded zones column, which is case-sensitive — so an
-    unnormalized name silently returns zero matches. Build a lookup over the
-    relevant cameras' configured zones and substitute when we find a match;
-    unknown names pass through so behavior matches what the model asked for.
+    configured key ("front_yard"), or fall back to a zone's friendly name
+    ("Front Walkway") instead of its ID ("front_walk"). The downstream zone
+    filter is a SQLite GLOB over the JSON-encoded zones column, which stores
+    config keys and is case-sensitive — so an unnormalized name silently
+    returns zero matches. Build a lookup over the relevant cameras' configured
+    zones, keyed by both the config key and the friendly name, and substitute
+    when we find a match; unknown names pass through so behavior matches what
+    the model asked for.
     """
     if not zones:
         return zones
@@ -112,8 +129,11 @@ def _resolve_zones(
         camera_config = config.cameras.get(camera_id)
         if camera_config is None:
             continue
-        for zone_name in camera_config.zones.keys():
+        for zone_name, zone_config in camera_config.zones.items():
             lookup.setdefault(zone_name.lower(), zone_name)
+            lookup.setdefault(
+                zone_config.get_formatted_name(zone_name).lower(), zone_name
+            )
 
     return [lookup.get(z.lower(), z) for z in zones]
 
@@ -201,7 +221,7 @@ async def _execute_search_objects(
         # Return it as-is for the LLM
         return response
     except Exception as e:
-        logger.error(f"Error executing search_objects: {e}", exc_info=True)
+        logger.exception(f"Error executing search_objects: {e}")
         return JSONResponse(
             content={
                 "success": False,
@@ -611,7 +631,7 @@ async def _execute_get_live_context(
         return result
 
     except Exception as e:
-        logger.error(f"Error executing get_live_context: {e}", exc_info=True)
+        logger.exception(f"Error executing get_live_context: {e}")
         return {
             "error": "Error getting live context",
         }
@@ -621,7 +641,7 @@ async def _get_live_frame_image_url(
     request: Request,
     camera: str,
     allowed_cameras: list[str],
-) -> Optional[str]:
+) -> str | None:
     """
     Fetch the current live frame for a camera as a base64 data URL.
 
@@ -801,7 +821,7 @@ async def _execute_start_camera_watch(
             zones=zones,
         )
     except RuntimeError as e:
-        logger.error("Failed to start VLM watch job: %s", e, exc_info=True)
+        logger.exception("Failed to start VLM watch job: %s", e)
         return {"error": "Failed to start VLM watch job."}
 
     return {
@@ -979,7 +999,7 @@ def _execute_get_recap(
 
         return {"events": events}
     except Exception as e:
-        logger.error("Error executing get_recap: %s", e, exc_info=True)
+        logger.exception("Error executing get_recap: %s", e)
         return {"error": "Failed to fetch recap data."}
 
 
@@ -1072,13 +1092,12 @@ async def _execute_pending_tools(
                 }
             )
         except Exception as e:
-            logger.error(
+            logger.exception(
                 "Error executing tool %s (id: %s): %s. Arguments: %s",
                 tool_name,
                 tool_call_id,
                 e,
                 json.dumps(tool_args),
-                exc_info=True,
             )
             error_content = json.dumps({"error": f"Tool execution failed: {str(e)}"})
             tool_calls_out.append(
@@ -1135,6 +1154,7 @@ async def chat_completion(
     tools = get_tool_definitions(
         semantic_search_enabled=semantic_search_enabled,
         attribute_classifications=attribute_classifications,
+        embeddings_language=_embeddings_language(config),
     )
     conversation = []
 
@@ -1186,7 +1206,7 @@ async def chat_completion(
         async def stream_body_llm():
             nonlocal conversation, stream_iterations
 
-            def _emit_chain(extra: Optional[list[dict[str, Any]]] = None):
+            def _emit_chain(extra: list[dict[str, Any]] | None = None):
                 # Return the full conversation (including the system message) so
                 # the client persists and replays it verbatim next turn.
                 chain = conversation + (extra or [])
@@ -1414,7 +1434,7 @@ async def chat_completion(
         )
 
     except Exception as e:
-        logger.error(f"Error in chat completion: {e}", exc_info=True)
+        logger.exception(f"Error in chat completion: {e}")
         return JSONResponse(
             content={
                 "error": "An error occurred while processing your request.",
@@ -1477,7 +1497,7 @@ async def start_vlm_monitor(
             username=request.headers.get("remote-user", ""),
         )
     except RuntimeError as e:
-        logger.error("Failed to start VLM watch job: %s", e, exc_info=True)
+        logger.exception("Failed to start VLM watch job: %s", e)
         return JSONResponse(
             content={"success": False, "message": "Failed to start VLM watch job."},
             status_code=409,

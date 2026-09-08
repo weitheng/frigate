@@ -11,6 +11,8 @@ It is not recommended to copy this full configuration file. Only specify values 
 
 :::
 
+Sections marked `# NOTE: Can be overridden at the camera level` can be set globally and then adjusted per camera. See [Global and Camera-Level Configuration](../config_overrides.md) for how that works.
+
 ```yaml
 mqtt:
   # Optional: Enable mqtt server (default: shown below)
@@ -171,13 +173,14 @@ model:
   # Valid values are rgb, bgr, or yuv. (default: shown below)
   input_pixel_format: rgb
   # Required: Object detection model input tensor format
-  # Valid values are nhwc or nchw (default: shown below)
+  # Valid values are nhwc, nchw, hwnc, or hwcn (default: shown below)
   input_tensor: nhwc
   # Optional: Data type of the model input tensor
   # Valid values are float, float_denorm, or int (default: shown below)
   input_dtype: int
-  # Required: Object detection model type, currently only used with the OpenVINO detector
-  # Valid values are ssd, yolox, yolonas (default: shown below)
+  # Required: Object detection model architecture, used by detectors that support more
+  # than one model type (openvino, onnx, rknn, memryx, axengine, synaptics, and others)
+  # Valid values are ssd, yolox, yolonas, yolo-generic, rfdetr, dfine (default: shown below)
   model_type: ssd
   # Required: Label name modifications. These are merged into the standard labelmap.
   labelmap:
@@ -339,7 +342,7 @@ detect:
   # especially when using separate streams for detect and record.
   # Use this setting to make the timeline bounding boxes more closely align
   # with the recording. The value can be positive or negative.
-  # TIP: Imagine there is an tracked object clip with a person walking from left to right.
+  # TIP: Imagine there is a tracked object clip with a person walking from left to right.
   #      If the tracked object lifecycle bounding box is consistently to the left of the person
   #      then the value should be decreased. Similarly, if a person is walking from
   #      left to right and the bounding box is consistently ahead of the person
@@ -468,8 +471,8 @@ review:
     detections: False
     # Optional: Activity Context Prompt to give context to the GenAI what activity is and is not suspicious.
     # It is important to be direct and detailed. See documentation for the default prompt structure.
-    activity_context_prompt: """Define what is and is not suspicious
-"""
+    activity_context_prompt: |
+      Define what is and is not suspicious
     # Optional: Image source for GenAI (default: preview)
     # Options: "preview" (uses cached preview frames at ~180p) or "recordings" (extracts frames from recordings at 480p)
     # Using "recordings" provides better image quality but uses more tokens per image.
@@ -813,14 +816,15 @@ classification:
         cameras:
           camera_name:
             # Required: Crop of image frame on this camera to run classification on
-            crop: [0, 180, 220, 400]
+            # [x1, y1, x2, y2] as decimals between 0 and 1, relative to the detect resolution
+            crop: [0.0, 0.25, 0.3, 0.85]
         # Optional: If classification should be run when motion is detected in the crop (default: shown below)
         motion: False
         # Optional: Interval to run classification on in seconds (default: shown below)
         interval: None
 
 # Optional: Restream configuration
-# Uses https://github.com/AlexxIT/go2rtc (v1.9.13)
+# Uses https://github.com/AlexxIT/go2rtc (v1.9.14)
 # NOTE: The default go2rtc API port (1984) must be used,
 #       changing this port for the integrated go2rtc instance is not supported.
 go2rtc:
@@ -977,7 +981,9 @@ cameras:
       # Optional: Adjust sort order of cameras in the UI. Larger numbers come later (default: shown below)
       # By default the cameras are sorted alphabetically.
       order: 0
-      # Optional: Whether or not to show the camera in the Frigate UI (default: shown below)
+      # Optional: Whether or not to show the camera on the default All Cameras live dashboard.
+      # The camera is still available everywhere else, including camera groups and settings
+      # (default: shown below)
       dashboard: True
       # Optional: Whether this camera is visible in review (the review page and its camera
       # filter, motion review, and the history view) (default: shown below)

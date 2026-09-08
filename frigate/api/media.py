@@ -7,7 +7,7 @@ import math
 import os
 import subprocess as sp
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path as FilePath
 from typing import Any
 from urllib.parse import unquote
@@ -53,6 +53,7 @@ from frigate.util.file import (
 )
 from frigate.util.image import get_image_from_recording, get_image_quality_params
 from frigate.util.media import get_keyframe_before
+from frigate.util.object import create_empty_regions_grid
 
 logger = logging.getLogger(__name__)
 
@@ -314,10 +315,8 @@ async def get_snapshot_from_recording(
                 Recordings.start_time,
             )
             .where(
-                (
-                    (frame_time >= Recordings.start_time)
-                    & (frame_time <= Recordings.end_time)
-                )
+                (frame_time >= Recordings.start_time)
+                & (frame_time <= Recordings.end_time)
             )
             .where(Recordings.camera == camera_name)
             .order_by(Recordings.start_time.desc())
@@ -335,10 +334,8 @@ async def get_snapshot_from_recording(
                     Recordings.start_time,
                 )
                 .where(
-                    (
-                        (frame_time >= Recordings.start_time)
-                        & (frame_time <= Recordings.end_time)
-                    )
+                    (frame_time >= Recordings.start_time)
+                    & (frame_time <= Recordings.end_time)
                 )
                 .where(Recordings.camera == camera_name)
                 .order_by(Recordings.start_time.desc())
@@ -398,10 +395,7 @@ async def submit_recording_snapshot_to_plus(
             Recordings.start_time,
         )
         .where(
-            (
-                (frame_time >= Recordings.start_time)
-                & (frame_time <= Recordings.end_time)
-            )
+            (frame_time >= Recordings.start_time) & (frame_time <= Recordings.end_time)
         )
         .where(Recordings.camera == camera_name)
         .order_by(Recordings.start_time.desc())
@@ -719,7 +713,7 @@ async def vod_hour(
 ):
     parts = year_month.split("-")
     start_date = (
-        datetime(int(parts[0]), int(parts[1]), day, hour, tzinfo=timezone.utc)
+        datetime(int(parts[0]), int(parts[1]), day, hour, tzinfo=UTC)
         - datetime.now(pytz.timezone(tz_name.replace(",", "/"))).utcoffset()
     )
     end_date = start_date + timedelta(hours=1) - timedelta(milliseconds=1)
@@ -1090,7 +1084,21 @@ def clear_region_grid(request: Request, camera_name: str):
             status_code=404,
         )
 
-    Regions.delete().where(Regions.camera == camera_name).execute()
+    # store an empty grid instead of deleting the row so the grid is
+    # rebuilt from newly tracked objects and not from all past history
+    region = {
+        Regions.camera: camera_name,
+        Regions.grid: create_empty_regions_grid(),
+        Regions.last_update: datetime.now().timestamp(),
+    }
+    (
+        Regions.insert(region)
+        .on_conflict(
+            conflict_target=[Regions.camera],
+            update=region,
+        )
+        .execute()
+    )
     return JSONResponse(
         content={"success": True, "message": "Region grid cleared"},
     )

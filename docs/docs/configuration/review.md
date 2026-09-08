@@ -23,7 +23,7 @@ In 0.14 and later, all of that is bundled into a single review item which starts
 
 ## Alerts and Detections
 
-Not every segment of video captured by Frigate may be of the same level of interest to you. Video of people who enter your property may be a different priority than those walking by on the sidewalk. For this reason, Frigate categorizes review items as _alerts_ and _detections_. By default, all person and car objects are considered alerts. You can refine categorization of your review items by configuring required zones for them.
+Not every segment of video captured by Frigate may be of the same level of interest to you. Video of people who enter your property may be a different priority than those walking by on the sidewalk. For this reason, Frigate categorizes review items as _alerts_ and _detections_. By default, all person and car objects are considered alerts. You can refine categorization of your review items by configuring [required zones](/configuration/zones#restricting-alerts-and-detections-to-specific-zones) for them.
 
 :::note
 
@@ -120,6 +120,31 @@ cameras:
 
 </TabItem>
 </ConfigTabs>
+
+## Categorizing manual events
+
+Events created with the [create manual event API](../integrations/api/create-event-events-camera-name-label-create-post.api.mdx) are categorized with the same label lists, using the label from the request path:
+
+1. If alerts are enabled and the label is listed in `review -> alerts -> labels`, the review item is an alert.
+2. Otherwise, if detections are enabled and the label is listed in `review -> detections -> labels`, the review item is a detection.
+3. If the label is in neither list, the review item is an alert, or no review item is created if alerts are disabled.
+
+This means manual events are alerts unless you explicitly list their label as a detection label. For example, to have PIR sensors create detections instead of alerts, post to `/api/events/front_door/pir_sensor/create` with the following config:
+
+```yaml {5-7}
+cameras:
+  front_door:
+    review:
+      detections:
+        labels:
+          - pir_sensor
+```
+
+:::note
+
+Required zones do not apply to manual events, since they are created through the API rather than by the object tracker. Setting `review -> alerts -> labels` to an empty list also does not stop manual events from becoming alerts, as a label in neither list still falls back to an alert.
+
+:::
 
 ## Restricting review items to specific zones
 

@@ -11,7 +11,7 @@ Object classification allows you to train a custom MobileNetV2 classification mo
 
 :::info
 
-Training a custom object classification model requires a one-time internet connection to download MobileNetV2 base weights. Once trained, the model runs fully offline. See [Network Requirements](/frigate/network_requirements#one-time-model-downloads) for details.
+Training a custom object classification model requires an internet connection to download MobileNetV2 base weights. By default these weights are not cached in `/config/`, so they are downloaded again after the container is recreated. Once trained, the model runs fully offline. See [Network Requirements](/frigate/network_requirements#one-time-model-downloads) for details.
 
 :::
 
@@ -137,7 +137,7 @@ If examples for some of your classes do not appear in the grid, you can continue
 
 :::tip Diversity matters far more than volume
 
-Selecting dozens of nearly identical images is one of the fastest ways to degrade model performance. MobileNetV2 can overfit quickly when trained on homogeneous data — the model learns what _that exact moment_ looked like rather than what actually defines the class. **This is why Frigate does not implement bulk training in the UI.**
+Selecting dozens of nearly identical images is one of the fastest ways to degrade model performance. MobileNetV2 can overfit quickly when trained on homogeneous data. The model learns what _that exact moment_ looked like rather than what actually defines the class. **This is why Frigate does not implement bulk training in the UI.**
 
 For more detail, see [Frigate Tip: Best Practices for Training Face and Custom Classification Models](https://github.com/blakeblackshear/frigate/discussions/21374).
 
@@ -155,7 +155,7 @@ For more detail, see [Frigate Tip: Best Practices for Training Face and Custom C
 
 :::tip `none` works differently from named classes
 
-Named classes work best with visually uniform examples — every Buddy photo should look like Buddy. The `none` class needs the opposite: visual diversity across sizes, framings, and qualities, because at inference it has to absorb everything that isn't one of your named classes. Don't apply the same "only keep large, well-framed images" rule to `none` that you would to a named class. Mix in small crops, partial views, and false positives deliberately - otherwise the model has no signal for "small/ambiguous thing = not one of my known classes" and will force those crops into a named class by default.
+Named classes work best with visually uniform examples. Every Buddy photo should look like Buddy. The `none` class needs the opposite: visual diversity across sizes, framings, and qualities, because at inference it has to absorb everything that isn't one of your named classes. Don't apply the same "only keep large, well-framed images" rule to `none` that you would to a named class. Mix in small crops, partial views, and false positives deliberately - otherwise the model has no signal for "small/ambiguous thing = not one of my known classes" and will force those crops into a named class by default.
 
 :::
 

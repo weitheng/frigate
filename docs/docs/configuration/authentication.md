@@ -91,7 +91,7 @@ auth:
 
 ## Session Length
 
-The default session length for user authentication in Frigate is 24 hours. This setting determines how long a user's authenticated session remains active before a token refresh is required — otherwise, the user will need to log in again.
+The default session length for user authentication in Frigate is 24 hours. This setting determines how long a user's authenticated session remains active before a token refresh is required. Otherwise, the user will need to log in again.
 
 While the default provides a balance of security and convenience, you can customize this duration to suit your specific security requirements and user experience preferences. The session length is configured in seconds.
 
@@ -141,7 +141,7 @@ Changing the secret will invalidate current tokens.
 
 ## Proxy configuration
 
-Frigate can be configured to leverage features of common upstream authentication proxies such as Authelia, Authentik, oauth2_proxy, or traefik-forward-auth.
+Frigate can be configured to leverage features of common upstream authentication proxies such as Authelia, Authentik, oauth2_proxy, or traefik-forward-auth. Frigate does not implement OIDC, SAML, or LDAP natively; as an NVR focused on recording and object detection, it relies on robust, battle-tested proxies to handle those protocols and passes the authenticated user and role through via headers (see below).
 
 If you are leveraging the authentication of an upstream proxy, you likely want to disable Frigate's authentication as there is no correspondence between users in Frigate's database and users authenticated via the proxy. Optionally, if communication between the reverse proxy and Frigate is over an untrusted network, you should set an `auth_secret` in the `proxy` config and configure the proxy to send the secret value as a header named `X-Proxy-Secret`. Assuming this is an untrusted network, you will also want to [configure a real TLS certificate](tls.md) to ensure the traffic can't simply be sniffed to steal the secret.
 
@@ -261,6 +261,19 @@ In this example:
 **Note on matching semantics:**
 
 - Admin precedence: if the `admin` mapping matches, Frigate resolves the session to `admin` to avoid accidental downgrade when a user belongs to multiple groups (for example both `admin` and `viewer` groups).
+
+:::note
+
+If a user isn't getting the role you expect, enable debug logging to see exactly what headers Frigate is receiving from your proxy:
+
+```yaml
+logger:
+  default: info
+  logs:
+    frigate.api.auth: debug
+```
+
+:::
 
 #### Port Considerations
 

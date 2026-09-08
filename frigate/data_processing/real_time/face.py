@@ -7,7 +7,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import cv2
 import numpy as np
@@ -28,6 +28,7 @@ from frigate.data_processing.common.face.model import (
 from frigate.types import TrackedObjectUpdateTypesEnum
 from frigate.util.builtin import EventsPerSecond, InferenceSpeed
 from frigate.util.image import area
+from frigate.util.path import safe_join, sanitize_path_component
 
 from ..types import DataProcessorMetrics
 from .api import RealTimeProcessorApi
@@ -219,7 +220,7 @@ class FaceRealTimeProcessor(RealTimeProcessorApi):
                 logger.debug("Not processing due to hitting max rec attempts.")
                 return
 
-        face: Optional[dict[str, Any]] = None
+        face: dict[str, Any] | None = None
 
         if self.requires_face_detection:
             logger.debug("Running manual face detection.")
@@ -287,6 +288,10 @@ class FaceRealTimeProcessor(RealTimeProcessorApi):
                 max(0, face_box[1]) : min(frame.shape[0], face_box[3]),
                 max(0, face_box[0]) : min(frame.shape[1], face_box[2]),
             ]
+
+        if face_frame.size == 0:
+            logger.debug(f"Empty face crop for {id}")
+            return
 
         res = self.recognizer.classify(face_frame)
 
@@ -405,9 +410,17 @@ class FaceRealTimeProcessor(RealTimeProcessorApi):
                 )
 
             # write face to library
-            folder = os.path.join(FACE_DIR, label)
+            sanitized_label = sanitize_path_component(label)
+            folder = safe_join(FACE_DIR, label)
+
+            if sanitized_label is None or folder is None:
+                return {
+                    "message": f"Invalid face name: {label}",
+                    "success": False,
+                }
+
             file = os.path.join(
-                folder, f"{label}_{datetime.datetime.now().timestamp()}.webp"
+                folder, f"{sanitized_label}_{datetime.datetime.now().timestamp()}.webp"
             )
             os.makedirs(folder, exist_ok=True)
 
