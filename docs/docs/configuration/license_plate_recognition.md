@@ -378,10 +378,10 @@ Navigate to <NavPath path="Settings > Camera configuration > Object detection" /
 
 Navigate to <NavPath path="Settings > Camera configuration > Objects" />.
 
-| Field                                          | Description         |
-| ---------------------------------------------- | ------------------- |
-| **Objects to track**                           | Add `license_plate` |
-| **Object filters > License Plate > Threshold** | Set to `0.7`        |
+| Field                                                     | Description         |
+| --------------------------------------------------------- | ------------------- |
+| **Objects to track**                                      | Add `license_plate` |
+| **Object filters > License Plate > Confidence threshold** | Set to `0.7`        |
 
 Navigate to <NavPath path="Settings > Camera configuration > Motion detection" />.
 
@@ -697,7 +697,7 @@ lpr:
    - You may need to adjust your `detection_threshold` if your plates are not being detected.
 
 4. Ensure the characters on detected plates are being _recognized_.
-   - Check the **Plate recognition** inference time in Enrichment metrics (<NavPath path="System metrics > Enrichments" />). High inference times (> 100ms) could lead to poor recognition results, especially for dedicated LPR cameras where the plate crosses the frame quickly.
+   - Check the **Plate recognition** inference time in Enrichment metrics (<NavPath path="Health and Metrics > Enrichments" />). High inference times (> 100ms) could lead to poor recognition results, especially for dedicated LPR cameras where the plate crosses the frame quickly.
    - Enable `debug_save_plates` to save images of detected text on plates to the clips directory (`/media/frigate/clips/lpr`). Ensure these images are readable and the text is clear.
    - Watch the debug view to see plates recognized in real-time. For non-dedicated LPR cameras, the vehicle's label will change to the recognized plate when LPR is enabled and working.
    - Adjust `recognition_threshold` settings per the suggestions [above](#advanced-configuration).

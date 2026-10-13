@@ -374,7 +374,7 @@ If segments are only ~1 second instead of ~10 seconds, the camera is sending cor
 
 :::tip
 
-You don't have to run `ffprobe` by hand to catch this. Open a camera's **Camera Probe Info** dialog (the info icon on the System → Metrics → Cameras page) and check the **Keyframe analysis** section. It probes the record stream and flags sparse or variable keyframes, which is what smart/"+" codecs (H.264+/H.265+) and long keyframe intervals produce.
+You don't have to run `ffprobe` by hand to catch this. Open a camera's **Camera Probe Info** dialog (the info icon on the Health and Metrics → Cameras page) and check the **Keyframe analysis** section. It probes the record stream and flags sparse or variable keyframes, which is what smart/"+" codecs (H.264+/H.265+) and long keyframe intervals produce.
 
 :::
 
@@ -397,19 +397,11 @@ dmesg | grep -i -E "gpu|drm|reset|hang"
 
 Messages like `trying reset from guc_exec_queue_timedout_job` or similar GPU reset/hang messages indicate a driver or hardware issue. Ensure your kernel and GPU drivers (especially Intel) are up to date.
 
-#### Step 6: Verify hardware acceleration configuration
-
-An incorrect `hwaccel_args` preset can cause ffmpeg to fail silently or consume excessive CPU, starving the detector of resources.
-
-- After upgrading Frigate, verify your preset matches your hardware (e.g., `preset-intel-qsv-h264` instead of the deprecated `preset-vaapi`).
-- For h265 cameras, use the corresponding h265 preset (e.g., `preset-intel-qsv-h265`).
-- Note that `hwaccel_args` are only relevant for the detect stream. Frigate does not decode the record stream.
-
-#### Step 7: Verify go2rtc stream configuration
+#### Step 6: Verify go2rtc stream configuration
 
 Ensure that the ffmpeg source names in your go2rtc configuration match the correct camera stream. A misconfigured stream name (e.g., copying a config from one camera to another without updating the stream reference) will cause the wrong stream to be used or the stream to fail entirely.
 
-#### Step 8: Check system resources
+#### Step 7: Check system resources
 
 If none of the above apply, the issue may be a general resource constraint. Monitor the following on your host:
 
