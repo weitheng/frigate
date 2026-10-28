@@ -12,6 +12,7 @@ from collections import deque
 from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import psutil
 from fastapi import APIRouter, Depends, Query, Request
@@ -58,6 +59,7 @@ from frigate.api.defs.response.export_response import (
 )
 from frigate.api.defs.response.generic_response import GenericResponse
 from frigate.api.defs.tags import Tags
+from frigate.api.media_auth import deny_response_for_media_uri
 from frigate.const import CLIPS_DIR, EXPORT_DIR
 from frigate.jobs.export import (
     ExportJob,
@@ -79,7 +81,8 @@ from frigate.record.export import (
     validate_ffmpeg_args,
 )
 from frigate.util.path import sanitize_contained_path
-from frigate.util.time import is_current_hour
+from frigate.util.recording_coverage import recording_overlap
+from frigate.util.time import get_normalized_tz_name, is_current_hour
 
 logger = logging.getLogger(__name__)
 
@@ -134,12 +137,22 @@ def _validate_export_case(export_case_id: str | None) -> JSONResponse | None:
 
 
 def _sanitize_existing_image(
+    request: Request,
     image_path: str | None,
 ) -> tuple[str | None, JSONResponse | None]:
     if not image_path:
         return None, None
 
     existing_image = sanitize_contained_path(image_path, CLIPS_DIR)
+
+    # CLIPS_DIR is shared by every camera, so the caller must also be allowed
+    # to read the image.
+    if existing_image is not None and deny_response_for_media_uri(
+        f"/clips/{quote(os.path.relpath(existing_image, CLIPS_DIR))}",
+        request.headers.get("remote-role"),
+        request.app.frigate_config,
+    ):
+        existing_image = None
 
     if existing_image is None:
         return None, JSONResponse(
@@ -166,15 +179,7 @@ def _validate_export_source(
 ) -> str | None:
     if playback_source == PlaybackSourceEnum.recordings:
         query = Recordings.select().where(
-            (
-                Recordings.start_time.between(start_time, end_time)
-                | Recordings.end_time.between(start_time, end_time)
-                | (
-                    (start_time > Recordings.start_time)
-                    & (end_time < Recordings.end_time)
-                )
-            )
-            & (Recordings.camera == camera_name)
+            recording_overlap(start_time, end_time) & (Recordings.camera == camera_name)
         )
 
         # a pinned export reads only that stream, so the other stream's
@@ -239,9 +244,7 @@ def _get_item_recording_export_errors(
 
         query = Recordings.select(Recordings.start_time, Recordings.end_time).where(
             Recordings.camera == camera_name,
-            Recordings.start_time.between(min_start, max_end)
-            | Recordings.end_time.between(min_start, max_end)
-            | ((min_start > Recordings.start_time) & (max_end < Recordings.end_time)),
+            recording_overlap(min_start, max_end),
         )
 
         # a pinned batch reads only that stream, so the other stream's
@@ -440,7 +443,29 @@ def _unique_archive_name(export: Export, used: set[str]) -> str:
     return candidate
 
 
-def _stream_case_archive(exports: list[Export]) -> Iterator[bytes]:
+def _archive_entry(
+    export: Export, arcname: str, tz_name: str | None
+) -> zipfile.ZipInfo:
+    """Zip entry stamped with the export's recording start time.
+
+    Zip times carry no zone and extractors read them as local time, so the
+    timestamp is converted with the UI timezone rather than the container's.
+    """
+    tz = None
+    if tz_name:
+        try:
+            tz = ZoneInfo(get_normalized_tz_name(tz_name))
+        except (ValueError, ZoneInfoNotFoundError):
+            pass
+
+    start = datetime.datetime.fromtimestamp(float(export.date), tz=tz)
+
+    # zip can't represent dates before 1980
+    date_time = max(start.timetuple()[:6], (1980, 1, 1, 0, 0, 0))
+    return zipfile.ZipInfo(arcname, date_time=date_time)
+
+
+def _stream_case_archive(exports: list[Export], tz_name: str | None) -> Iterator[bytes]:
     """Yield bytes of a zip archive built from the given exports' mp4 files."""
     buffer = _StreamingZipBuffer()
     used_names: set[str] = set()
@@ -458,9 +483,10 @@ def _stream_case_archive(exports: list[Export]) -> Iterator[bytes]:
                 continue
 
             arcname = _unique_archive_name(export, used_names)
+            zinfo = _archive_entry(export, arcname, tz_name)
 
             with (
-                archive.open(arcname, mode="w", force_zip64=True) as entry,
+                archive.open(zinfo, mode="w", force_zip64=True) as entry,
                 source.open("rb") as src,
             ):
                 while True:
@@ -499,6 +525,7 @@ def _content_disposition(filename: str, ascii_fallback: str) -> str:
     description="Streams a zip archive containing every completed export's mp4 for the given case.",
 )
 def download_export_case(
+    request: Request,
     case_id: str,
     allowed_cameras: list[str] = Depends(get_allowed_cameras_for_filter),
 ):
@@ -531,7 +558,7 @@ def download_export_case(
         archive_base = case_id
 
     return StreamingResponse(
-        _stream_case_archive(exports),
+        _stream_case_archive(exports, request.app.frigate_config.ui.timezone),
         media_type="application/zip",
         headers={
             "Content-Disposition": _content_disposition(
@@ -701,7 +728,7 @@ def export_recordings_batch(
     sanitized_images: list[str | None] = []
     for item in body.items:
         existing_image, image_validation_error = _sanitize_existing_image(
-            item.image_path
+            request, item.image_path
         )
         if image_validation_error is not None:
             return image_validation_error
@@ -849,7 +876,9 @@ def export_recording(
 
     playback_source = body.source
     friendly_name = body.name
-    existing_image, image_validation_error = _sanitize_existing_image(body.image_path)
+    existing_image, image_validation_error = _sanitize_existing_image(
+        request, body.image_path
+    )
     if image_validation_error is not None:
         return image_validation_error
 
@@ -1044,7 +1073,9 @@ def export_recording_custom(
 
     playback_source = body.source
     friendly_name = body.name
-    existing_image, image_validation_error = _sanitize_existing_image(body.image_path)
+    existing_image, image_validation_error = _sanitize_existing_image(
+        request, body.image_path
+    )
     if image_validation_error is not None:
         return image_validation_error
     ffmpeg_input_args = body.ffmpeg_input_args

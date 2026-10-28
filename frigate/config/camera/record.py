@@ -147,6 +147,7 @@ class RecordConfig(FrigateBaseModel):
     )
     expire_interval: int = Field(
         default=60,
+        ge=1,
         title="Record cleanup interval",
         description="Minutes between cleanup passes that remove expired recording segments.",
     )
@@ -221,6 +222,14 @@ class RecordConfig(FrigateBaseModel):
         return max(
             self.alerts.pre_capture,
             self.detections.pre_capture,
+        )
+
+    @property
+    def event_post_capture(self) -> int:
+        """Largest post-capture window used to fetch candidate reviews."""
+        return max(
+            self.alerts.post_capture,
+            self.detections.post_capture,
         )
 
     def get_review_pre_capture(self, severity: SeverityEnum) -> int:

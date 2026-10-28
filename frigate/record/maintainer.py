@@ -42,7 +42,7 @@ from frigate.const import (
 )
 from frigate.models import Recordings, ReviewSegment
 from frigate.review.types import SeverityEnum
-from frigate.util.media import get_keyframe_offsets
+from frigate.util.media import get_playback_index
 from frigate.util.ownership import chown_to_runtime
 from frigate.util.services import get_video_properties
 
@@ -188,7 +188,7 @@ class RecordingMaintainer(threading.Thread):
         self.object_recordings_info: dict[str, list] = defaultdict(list)
         self.audio_recordings_info: dict[str, list] = defaultdict(list)
         # cache_path -> (end_time, duration, has_audio, audio_rate,
-        # audio_codec, video_codec, keyframes)
+        # audio_codec, video_codec, keyframes, audio_duration)
         self.end_time_cache: dict[
             str,
             tuple[
@@ -199,6 +199,7 @@ class RecordingMaintainer(threading.Thread):
                 str | None,
                 str | None,
                 list[int] | None,
+                float | None,
             ],
         ] = {}
         # last known capture end per (camera, stream_type); 0.0 marks a key
@@ -471,9 +472,14 @@ class RecordingMaintainer(threading.Thread):
         for key, recordings in grouped_recordings.items():
             camera, stream_type = key
 
-            # get all reviews with the end time after the start of the oldest
-            # cache file or with end_time None; shared across stream types
+            # get all reviews whose post capture reaches the oldest cache file
+            # or with end_time None; shared across stream types
             if camera not in reviews_by_camera:
+                post_capture = (
+                    self.config.cameras[camera].record.event_post_capture
+                    if camera in self.config.cameras
+                    else 0
+                )
                 reviews_by_camera[camera] = (
                     ReviewSegment.select(
                         ReviewSegment.start_time,
@@ -484,7 +490,10 @@ class RecordingMaintainer(threading.Thread):
                     .where(
                         ReviewSegment.camera == camera,
                         (ReviewSegment.end_time == None)
-                        | (ReviewSegment.end_time >= min_start_per_camera[camera]),
+                        | (
+                            ReviewSegment.end_time
+                            >= min_start_per_camera[camera] - post_capture
+                        ),
                     )
                     .order_by(ReviewSegment.start_time)
                 )
@@ -611,6 +620,7 @@ class RecordingMaintainer(threading.Thread):
                 audio_codec,
                 video_codec,
                 keyframes,
+                audio_duration,
             ) = self.end_time_cache[cache_path]
             # recover the resolved start rather than reusing the truncated
             # filename timestamp
@@ -644,7 +654,7 @@ class RecordingMaintainer(threading.Thread):
                 # playback snaps mid-file entry points against these offsets
                 # instead of probing files on demand
                 async with self.probe_semaphore:
-                    keyframes = await get_keyframe_offsets(cache_path)
+                    keyframes, audio_duration = await get_playback_index(cache_path)
 
                 if previous_start is not None:
                     await previous_start.wait()
@@ -661,6 +671,7 @@ class RecordingMaintainer(threading.Thread):
                     audio_codec,
                     video_codec,
                     keyframes,
+                    audio_duration,
                 )
                 # segments later discarded by retention still advance the
                 # chain for the next kept segment
@@ -755,43 +766,45 @@ class RecordingMaintainer(threading.Thread):
                     audio_codec,
                     video_codec,
                     keyframes,
+                    audio_duration,
                 )
 
         # we fell through the continuous / motion check, so we need to check the review items
         # if the cached segment overlaps with the review items:
-        overlaps = False
+        modes: set[RetainModeEnum] = set()
         for review in reviews:
             severity = SeverityEnum[review.severity]
 
-            # if the review item starts in the future, stop checking review items
-            # and remove this segment
+            # stop once no later review item's pre capture can reach this segment
+            if (
+                review.start_time - record_config.event_pre_capture
+            ) > end_time.timestamp():
+                break
+
             if (
                 review.start_time - record_config.get_review_pre_capture(severity)
             ) > end_time.timestamp():
-                overlaps = False
-                break
+                continue
 
-            # if the review item is in progress or ends after the recording starts, keep it
-            # and stop looking at review items
+            # collect every review item that is in progress or ends after the
+            # recording starts, since their windows can overlap
             if (
                 review.end_time is None
                 or (review.end_time + record_config.get_review_post_capture(severity))
                 >= start_time.timestamp()
             ):
-                overlaps = True
-                break
+                modes.add(
+                    alerts_retain_mode
+                    if review.severity == "alert"
+                    else detections_retain_mode
+                )
 
-        if overlaps:
-            record_mode = (
-                alerts_retain_mode
-                if review.severity == "alert"
-                else detections_retain_mode
-            )
-
+        if modes:
             if segment_stats is None:
                 segment_stats = self.segment_stats(camera, start_time, end_time)
 
-            if not segment_stats.should_discard_segment(record_mode):
+            # keep the segment if any overlapping review item's mode keeps it
+            if any(not segment_stats.should_discard_segment(m) for m in modes):
                 # move from cache to recordings immediately
                 return await self.move_segment(
                     camera,
@@ -806,6 +819,7 @@ class RecordingMaintainer(threading.Thread):
                     audio_codec,
                     video_codec,
                     keyframes,
+                    audio_duration,
                 )
             else:
                 self.drop_segment(cache_path)
@@ -951,6 +965,7 @@ class RecordingMaintainer(threading.Thread):
         audio_codec: str | None = None,
         video_codec: str | None = None,
         keyframes: list[int] | None = None,
+        audio_duration: float | None = None,
     ) -> dict[str, Any] | None:
         path_time = segment_path_time(cache_path) or start_time
 
@@ -1000,6 +1015,7 @@ class RecordingMaintainer(threading.Thread):
                     logger.error(f"Unable to convert {cache_path} to {file_path}")
                     if p.stderr:
                         logger.error((await p.stderr.read()).decode("ascii"))
+                    Path(file_path).unlink(missing_ok=True)
                     return None
                 else:
                     logger.debug(
@@ -1017,7 +1033,7 @@ class RecordingMaintainer(threading.Thread):
                 except OSError:
                     segment_size = 0
 
-                os.remove(cache_path)
+                self.drop_segment(cache_path)
 
                 rand_id = "".join(
                     random.choices(string.ascii_lowercase + string.digits, k=6)
@@ -1043,13 +1059,12 @@ class RecordingMaintainer(threading.Thread):
                     Recordings.audio_codec.name: audio_codec,
                     Recordings.video_codec.name: video_codec,
                     Recordings.keyframes.name: keyframes,
+                    Recordings.audio_duration.name: audio_duration,
                 }
         except Exception:
             logger.exception(f"Unable to store recording segment {cache_path}")
-            Path(cache_path).unlink(missing_ok=True)
 
-        # clear end_time cache
-        self.end_time_cache.pop(cache_path, None)
+        self.drop_segment(cache_path)
         return None
 
     def run(self) -> None:

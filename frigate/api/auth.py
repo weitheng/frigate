@@ -12,8 +12,9 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs
 
+import requests
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from joserfc import jwt
@@ -31,11 +32,14 @@ from frigate.api.media_auth import (
     check_camera_access,
     deny_response_for_media_uri,
     is_role_restricted,
+    normalize_request_path,
+    split_request_uri,
 )
 from frigate.config import AuthConfig, ProxyConfig
 from frigate.const import CONFIG_DIR, JWT_SECRET_ENV_VAR, PASSWORD_HASH_ALGORITHM
 from frigate.models import User
 from frigate.notices import raise_notice
+from frigate.util.origin import origin_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -313,14 +317,10 @@ def get_remote_addr(request: Request):
 
     route = list(reversed(forwarded_for.split(",")))
     logger.debug(f"IP Route: {[r for r in route]}")
-    trusted_proxies = []
-    for proxy in request.app.frigate_config.auth.trusted_proxies:
-        try:
-            network = ipaddress.ip_network(proxy)
-        except ValueError:
-            logger.warning(f"Unable to parse trusted network: {proxy}")
-            continue
-        trusted_proxies.append(network)
+    trusted_proxies = [
+        ipaddress.ip_network(proxy, strict=False)
+        for proxy in request.app.frigate_config.auth.trusted_proxies
+    ]
 
     # return the first remote address that is not trusted
     for addr in route:
@@ -472,8 +472,37 @@ def create_encoded_jwt(user, role, expiration, secret):
     )
 
 
+def _user_session(user: User) -> tuple[str, int | None]:
+    changed_at = user.password_changed_at
+
+    # floored like iat, so a login in the same second as the change stays valid
+    return user.role, int(changed_at.timestamp()) if changed_at else None
+
+
+def load_user_sessions() -> dict[str, tuple[str, int | None]]:
+    """Map each username to its role and password change time for /auth."""
+    return {user.username: _user_session(user) for user in User.select()}
+
+
+def refresh_user_session(request: Request, username: str) -> None:
+    """Sync the /auth session map after a user is created, changed or deleted."""
+    user = User.get_or_none(User.username == username)
+    if user is None:
+        request.app.user_sessions.pop(username, None)
+    else:
+        request.app.user_sessions[username] = _user_session(user)
+
+
+def is_secure_request(request: Request) -> bool:
+    """Check the cookie setting and nginx's forwarded scheme for HTTPS."""
+    # nginx sets X-Forwarded-Proto to its own scheme, replacing any client value
+    return (
+        request.app.frigate_config.auth.cookie_secure
+        or request.headers.get("x-forwarded-proto") == "https"
+    )
+
+
 def set_jwt_cookie(response: Response, cookie_name, encoded_jwt, max_age, secure):
-    # TODO: ideally this would set secure as well, but that requires TLS
     # Starlette sets SameSite=Lax by default. The cookie is still sent to
     # same-site iframes (e.g. Home Assistant on the same host or domain), but
     # not to cross-site ones. CSRF is also mitigated by requiring a custom
@@ -690,6 +719,17 @@ def auth(request: Request):
 
     success_response = Response("", status_code=202)
 
+    original_url = request.headers.get("x-original-url")
+
+    if _is_cross_origin_stream_request(original_url, request):
+        logger.warning(
+            "Rejected cross-origin request: origin=%s, host=%s, x-forwarded-host=%s",
+            request.headers.get("origin"),
+            request.headers.get("x-original-host"),
+            request.headers.get("x-forwarded-host"),
+        )
+        return Response("", status_code=403)
+
     # dont require auth if the request is on the internal port
     # this header is set by Frigate's nginx proxy, so it cant be spoofed.
     # the port is the boot-time snapshot rather than the live config value:
@@ -713,7 +753,6 @@ def auth(request: Request):
         logger.debug("X-Proxy-Secret header does not match configured secret value")
         return fail_response
 
-    original_url = request.headers.get("x-original-url")
     frigate_config = request.app.frigate_config
 
     # if auth is disabled, just apply the proxy header map and return success
@@ -751,7 +790,6 @@ def auth(request: Request):
     fail_response.headers["location"] = "/login"
 
     JWT_COOKIE_NAME = request.app.frigate_config.auth.cookie_name
-    JWT_COOKIE_SECURE = request.app.frigate_config.auth.cookie_secure
     JWT_REFRESH = request.app.frigate_config.auth.refresh_time
     JWT_SESSION_LENGTH = request.app.frigate_config.auth.session_length
 
@@ -777,20 +815,27 @@ def auth(request: Request):
         if "sub" not in token.claims:
             logger.debug("user not set in jwt token")
             return fail_response
-        if "role" not in token.claims:
-            logger.debug("role not set in jwt token")
-            return fail_response
         if "exp" not in token.claims:
             logger.debug("exp not set in jwt token")
             return fail_response
 
         user = token.claims.get("sub")
-        role = token.claims.get("role")
+        session = request.app.user_sessions.get(user)
+        if session is None:
+            logger.debug("jwt user %s no longer exists", user)
+            return fail_response
 
-        # the token keeps the role it was issued with, so a role removed from
-        # the config since then must send the user back through login
+        role, password_changed_at = session
+        if password_changed_at is not None and (
+            int(token.claims.get("iat", 0)) < password_changed_at
+        ):
+            logger.debug("jwt token issued before password change")
+            return fail_response
+
         if role not in auth_config.roles:
-            logger.debug("jwt role %s is not in the config", role)
+            logger.debug(
+                "jwt user %s has role %s, which is not in the config", user, role
+            )
             return fail_response
 
         current_time = int(time.time())
@@ -813,25 +858,6 @@ def auth(request: Request):
         # if the jwt cookie is expiring soon
         if jwt_source == "cookie" and expiration - JWT_REFRESH <= current_time:
             logger.debug("jwt token expiring soon, refreshing cookie")
-
-            # Check if password has been changed since token was issued
-            # If so, force re-login by rejecting the refresh
-            try:
-                user_obj = User.get_by_id(user)
-                if user_obj.password_changed_at is not None:
-                    token_iat = int(token.claims.get("iat", 0))
-                    password_changed_timestamp = int(
-                        user_obj.password_changed_at.timestamp()
-                    )
-                    if token_iat < password_changed_timestamp:
-                        logger.debug(
-                            "jwt token issued before password change, rejecting refresh"
-                        )
-                        return fail_response
-            except DoesNotExist:
-                logger.debug("user not found")
-                return fail_response
-
             new_expiration = current_time + JWT_SESSION_LENGTH
             new_encoded_jwt = create_encoded_jwt(
                 user, role, new_expiration, request.app.jwt_token
@@ -841,7 +867,7 @@ def auth(request: Request):
                 JWT_COOKIE_NAME,
                 new_encoded_jwt,
                 JWT_SESSION_LENGTH,
-                JWT_COOKIE_SECURE,
+                is_secure_request(request),
             )
 
         success_response.headers["remote-user"] = user
@@ -930,7 +956,6 @@ def login(request: Request, body: AppPostLoginBody):
         )
 
     JWT_COOKIE_NAME = request.app.frigate_config.auth.cookie_name
-    JWT_COOKIE_SECURE = request.app.frigate_config.auth.cookie_secure
     JWT_SESSION_LENGTH = request.app.frigate_config.auth.session_length
     user = body.user
     password = body.password
@@ -946,13 +971,16 @@ def login(request: Request, body: AppPostLoginBody):
 
     password_hash = db_user.password_hash
     if verify_password(password, password_hash):
-        role = getattr(db_user, "role", "viewer")
-        config_roles_set = set(request.app.frigate_config.auth.roles.keys())
-        if role not in config_roles_set:
+        role = db_user.role
+        if role not in request.app.frigate_config.auth.roles:
             logger.warning(
-                f"User {db_user.username} has an invalid role {role}, falling back to 'viewer'."
+                "Login refused for user '%s' with role '%s', which is not in the config",
+                user,
+                role,
             )
-            role = "viewer"
+            failed_logins.record(user, time.time(), known=True)
+            return JSONResponse(content={"message": "Login failed"}, status_code=401)
+
         expiration = int(time.time()) + JWT_SESSION_LENGTH
         encoded_jwt = create_encoded_jwt(user, role, expiration, request.app.jwt_token)
         response = Response("", 200)
@@ -961,7 +989,7 @@ def login(request: Request, body: AppPostLoginBody):
             JWT_COOKIE_NAME,
             encoded_jwt,
             JWT_SESSION_LENGTH,
-            JWT_COOKIE_SECURE,
+            is_secure_request(request),
         )
         # Clear admin_first_time_login flag after successful admin login so the
         # UI stops showing the first-time login documentation link.
@@ -1003,7 +1031,7 @@ def create_user(
     HASH_ITERATIONS = request.app.frigate_config.auth.hash_iterations
     config_roles = list(request.app.frigate_config.auth.roles.keys())
 
-    if not re.match("^[A-Za-z0-9._]+$", body.username):
+    if not re.match(r"^(?!\.+$)[A-Za-z0-9._]+$", body.username):
         return JSONResponse(content={"message": "Invalid username"}, status_code=400)
 
     if body.role not in config_roles:
@@ -1027,9 +1055,11 @@ def create_user(
             User.username: body.username,
             User.password_hash: password_hash,
             User.role: role,
+            User.password_changed_at: datetime.now(),
             User.notification_tokens: [],
         }
     ).execute()
+    refresh_user_session(request, body.username)
     request.app.config_publisher.publisher.publish("config/auth", None)
     return JSONResponse(content={"username": body.username})
 
@@ -1048,6 +1078,7 @@ def delete_user(request: Request, username: str):
         )
 
     User.delete_by_id(username)
+    refresh_user_session(request, username)
     request.app.config_publisher.publisher.publish("config/auth", None)
     return JSONResponse(content={"success": True})
 
@@ -1115,13 +1146,13 @@ async def update_password(
             User.password_changed_at: datetime.now(),
         }
     ).where(User.username == username).execute()
+    refresh_user_session(request, username)
 
     response = JSONResponse(content={"success": True})
 
     # If user changed their own password, issue a new JWT to keep them logged in
     if current_username == username:
         JWT_COOKIE_NAME = request.app.frigate_config.auth.cookie_name
-        JWT_COOKIE_SECURE = request.app.frigate_config.auth.cookie_secure
         JWT_SESSION_LENGTH = request.app.frigate_config.auth.session_length
 
         expiration = int(time.time()) + JWT_SESSION_LENGTH
@@ -1134,7 +1165,7 @@ async def update_password(
             JWT_COOKIE_NAME,
             encoded_jwt,
             JWT_SESSION_LENGTH,
-            JWT_COOKIE_SECURE,
+            is_secure_request(request),
         )
 
     return response
@@ -1174,6 +1205,7 @@ async def update_role(
         )
 
     User.set_by_id(username, {User.role: body.role})
+    refresh_user_session(request, username)
     request.app.config_publisher.publisher.publish("config/auth", None)
     return JSONResponse(content={"success": True})
 
@@ -1229,11 +1261,44 @@ def _get_stream_owner_cameras(request: Request, stream_name: str) -> set[str]:
     return owner_cameras
 
 
+def _is_existing_go2rtc_stream(request: Request, stream_name: str) -> bool:
+    """Check that `stream_name` names a stream go2rtc already knows about.
+
+    go2rtc turns any `src` that is not an existing stream name into a new ad hoc
+    stream and starts the producer it describes, so the proxied live-stream
+    paths must only ever reference existing streams.
+    """
+    frigate_config = request.app.frigate_config
+
+    if _get_stream_owner_cameras(request, stream_name):
+        return True
+
+    config_streams = getattr(frigate_config.go2rtc, "streams", None) or {}
+    if stream_name in config_streams:
+        return True
+
+    # streams added at runtime through PUT /go2rtc/streams only exist in go2rtc
+    try:
+        r = requests.get("http://127.0.0.1:1984/api/streams", timeout=2)
+    except requests.RequestException:
+        logger.warning("Unable to fetch streams from go2rtc to authorize request")
+        return False
+
+    if not r.ok:
+        return False
+
+    try:
+        return stream_name in r.json()
+    except ValueError:
+        return False
+
+
 # nginx proxies these paths straight to go2rtc with authentication-only checks
 # (see auth_request.conf). Each names the desired stream via the `src` query
 # param, so the camera-level check must happen here in the `/auth` subrequest —
 # `require_go2rtc_stream_access` only guards the REST `/go2rtc/streams/{name}`
-# endpoint, not these proxied live-stream paths.
+# endpoint, not these proxied live-stream paths. The nginx locations are prefix
+# matches, so anything under these paths is proxied too.
 GO2RTC_STREAM_PROXY_PATHS = frozenset(
     {
         "/live/mse/api/ws",
@@ -1243,31 +1308,63 @@ GO2RTC_STREAM_PROXY_PATHS = frozenset(
 )
 
 
+def _is_go2rtc_stream_proxy_request(path: str, request: Request) -> bool:
+    # nginx marks requests routed through the go2rtc stream locations, and the
+    # normalized path catches them if that marker is ever missing
+    if request.headers.get("x-go2rtc-stream-proxy") == "1":
+        return True
+
+    normalized = normalize_request_path(path)
+    return any(normalized.startswith(p) for p in GO2RTC_STREAM_PROXY_PATHS)
+
+
+def _is_cross_origin_stream_request(original_url: str | None, request: Request) -> bool:
+    # the internal port grants admin, so a browser on another site must be
+    # stopped before that early return
+    upgrade = request.headers.get("x-original-upgrade", "").lower()
+    path = split_request_uri(original_url or "")[0]
+    if upgrade != "websocket" and not _is_go2rtc_stream_proxy_request(path, request):
+        return False
+
+    return not origin_allowed(
+        request.headers.get("origin"),
+        request.headers.get("x-original-host"),
+        request.headers.get("x-forwarded-host"),
+    )
+
+
 def deny_response_for_go2rtc_stream(
     original_url: str | None, role: str | None, request: Request
 ) -> int | None:
-    """Block role-restricted users from go2rtc live streams they cannot access.
+    """Block go2rtc live-stream requests the current role may not make.
 
-    Returns 403 when any `src` stream named in `original_url` resolves to a
-    camera outside the role's allow-list (or when no `src` is provided on a
-    stream-proxy path), otherwise None. Mirrors the resolution logic in
+    Returns 403 when any `src` named in `original_url` is not an existing go2rtc
+    stream (for every role), or when it resolves to a camera outside a
+    restricted role's allow-list (or no `src` is provided for such a role),
+    otherwise None. Mirrors the resolution logic in
     `require_go2rtc_stream_access` so substream names map to their owning
     camera correctly.
     """
     if not original_url:
         return None
 
-    parsed = urlparse(original_url)
-    if parsed.path not in GO2RTC_STREAM_PROXY_PATHS:
+    path, query = split_request_uri(original_url)
+    if not _is_go2rtc_stream_proxy_request(path, request):
         return None
 
     frigate_config = request.app.frigate_config
+    sources = parse_qs(query, keep_blank_values=True).get("src", [])
+
+    # an unknown src would make go2rtc create an ad hoc stream from it, which
+    # bypasses the restricted-source checks on PUT /go2rtc/streams
+    for src in sources:
+        if not _is_existing_go2rtc_stream(request, src):
+            return 403
 
     # admin and full-access roles (no allow-list) bypass the camera check
     if not role or not is_role_restricted(role, frigate_config):
         return None
 
-    sources = parse_qs(parsed.query).get("src", [])
     if not sources:
         # a stream-proxy request naming no stream has nothing legitimate to
         # show a restricted user

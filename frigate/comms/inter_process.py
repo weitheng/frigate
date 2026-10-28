@@ -50,7 +50,13 @@ class InterProcessCommunicator(Communicator):
 
                     if isinstance(raw, list):
                         (topic, value) = raw
-                        response = self._dispatcher(topic, value)
+
+                        # REP owes a reply, so a handler error must not end the thread
+                        try:
+                            response = self._dispatcher(topic, value)
+                        except Exception:
+                            logger.exception("Error handling IPC topic %s", topic)
+                            response = None
                     else:
                         logging.warning(
                             f"Received unexpected data type in ZMQ recv_json: {type(raw)}"
@@ -79,14 +85,16 @@ class InterProcessRequestor:
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
         self.socket.connect(SOCKET_REP_REQ)
+        self.lock = threading.Lock()
 
     def send_data(self, topic: str, data: Any) -> Any:
         """Sends data and then waits for reply."""
-        try:
-            self.socket.send_json((topic, data))
-            return self.socket.recv_json()
-        except zmq.ZMQError:
-            return ""
+        with self.lock:
+            try:
+                self.socket.send_json((topic, data))
+                return self.socket.recv_json()
+            except zmq.ZMQError:
+                return ""
 
     def stop(self) -> None:
         self.socket.close(linger=0)

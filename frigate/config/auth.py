@@ -1,3 +1,5 @@
+import ipaddress
+
 from pydantic import Field, field_validator, model_validator
 
 from .base import FrigateBaseModel
@@ -25,7 +27,7 @@ class AuthConfig(FrigateBaseModel):
     cookie_secure: bool = Field(
         default=False,
         title="Secure cookie flag",
-        description="Set the secure flag on the auth cookie; should be true when using TLS.",
+        description="Always set the secure flag on the auth cookie. Frigate sets it automatically when serving TLS; enable this when a reverse proxy terminates TLS in front of Frigate. A proxy that connects to the TLS port must serve Frigate to browsers over HTTPS.",
     )
     session_length: int = Field(
         default=86400,
@@ -67,6 +69,14 @@ class AuthConfig(FrigateBaseModel):
             "When true the UI may show a help link on the login page informing users how to sign in after an admin password reset. "
         ),
     )
+
+    @field_validator("trusted_proxies")
+    @classmethod
+    def validate_trusted_proxies(cls, v: list[str]) -> list[str]:
+        for proxy in v:
+            ipaddress.ip_network(proxy, strict=False)
+
+        return v
 
     @field_validator("roles")
     @classmethod

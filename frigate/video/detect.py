@@ -2,10 +2,11 @@
 
 import logging
 import queue
+import random
 import threading
 import time
 from collections import deque
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from multiprocessing import Queue
 from multiprocessing.synchronize import Event as MpEvent
 from typing import Any
@@ -255,7 +256,9 @@ def process_frames(
     region_grid: list[list[dict[str, Any]]],
     exit_on_empty: bool = False,
 ):
-    next_region_update = get_tomorrow_at_time(2)
+    # cameras share one dispatcher, so stagger the daily grid rebuilds
+    region_update_offset = timedelta(seconds=random.randrange(3600))
+    next_region_update = get_tomorrow_at_time(2) + region_update_offset
     config_subscriber = CameraConfigUpdateSubscriber(
         None,
         {camera_config.name: camera_config},
@@ -338,8 +341,13 @@ def process_frames(
             continue
 
         if datetime.now().astimezone(UTC) > next_region_update:
-            region_grid = requestor.send_data(REQUEST_REGION_GRID, camera_config.name)
-            next_region_update = get_tomorrow_at_time(2)
+            updated_grid = requestor.send_data(REQUEST_REGION_GRID, camera_config.name)
+
+            # A failed request replies empty, so keep the current grid
+            if updated_grid:
+                region_grid = updated_grid
+
+            next_region_update = get_tomorrow_at_time(2) + region_update_offset
 
         try:
             if exit_on_empty:

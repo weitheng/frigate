@@ -310,26 +310,20 @@ class CameraWatchdog(threading.Thread):
         self._check_config_updates()
         return self.config.enabled
 
-    def reset_capture_thread(
-        self, terminate: bool = True, drain_output: bool = True
-    ) -> None:
+    def reset_capture_thread(self, terminate: bool = True) -> None:
         if terminate:
+            # The capture thread keeps draining stdout, so wait() is enough here.
+            # communicate() would also buffer every frame ffmpeg writes before it
+            # exits, which can be many duplicates after a stall.
             self.ffmpeg_detect_process.terminate()
             try:
                 self.logger.info("Waiting for ffmpeg to exit gracefully...")
-
-                if drain_output:
-                    self.ffmpeg_detect_process.communicate(timeout=30)
-                else:
-                    self.ffmpeg_detect_process.wait(timeout=30)
+                self.ffmpeg_detect_process.wait(timeout=30)
             except sp.TimeoutExpired:
                 self.logger.info("FFmpeg did not exit. Force killing...")
                 self.ffmpeg_detect_process.kill()
 
-                if drain_output:
-                    self.ffmpeg_detect_process.communicate()
-                else:
-                    self.ffmpeg_detect_process.wait()
+                self.ffmpeg_detect_process.wait()
 
         # Update reconnects
         now = datetime.now().timestamp()
@@ -480,32 +474,34 @@ class CameraWatchdog(threading.Thread):
             if not self.capture_thread.is_alive():
                 self.detect_status.send("offline", now)
                 self.camera_fps.value = 0
-                self.logger.error(
-                    f"Ffmpeg process crashed unexpectedly for {self.config.name}."
-                )
                 if can_restart:
+                    self.logger.error(
+                        f"Ffmpeg process crashed unexpectedly for {self.config.name}."
+                    )
                     self.reset_capture_thread(terminate=False)
                     last_restart_time = now
             elif self.camera_fps.value >= (self.config.detect.fps + 10):
                 self.fps_overflow_count += 1
 
-                if self.fps_overflow_count == 3:
+                # Require 3 retry intervals of sustained overflow. camera_fps
+                # averages the last 10s, so one burst of buffered frames stays
+                # over the limit for several 1s ticks.
+                if self.fps_overflow_count >= 3 * self.sleeptime and can_restart:
                     self.detect_status.send("offline", now)
                     self.fps_overflow_count = 0
                     self.camera_fps.value = 0
                     self.logger.info(
                         f"{self.config.name} exceeded fps limit. Exiting ffmpeg..."
                     )
-                    if can_restart:
-                        self.reset_capture_thread(drain_output=False)
-                        last_restart_time = now
+                    self.reset_capture_thread()
+                    last_restart_time = now
             elif now - self.capture_thread.current_frame.value > 20:
                 self.detect_status.send("offline", now)
                 self.camera_fps.value = 0
-                self.logger.info(
-                    f"No frames received from {self.config.name} in 20 seconds. Exiting ffmpeg..."
-                )
                 if can_restart:
+                    self.logger.info(
+                        f"No frames received from {self.config.name} in 20 seconds. Exiting ffmpeg..."
+                    )
                     self.reset_capture_thread()
                     last_restart_time = now
             else:
@@ -565,9 +561,14 @@ class CameraWatchdog(threading.Thread):
 
                 self._send_roles_offline(p["roles"], now)
 
-                p["process"] = start_or_restart_ffmpeg(
-                    p["cmd"], self.logger, p["logpipe"], ffmpeg_process=p["process"]
-                )
+                if can_restart:
+                    p["process"] = start_or_restart_ffmpeg(
+                        p["cmd"],
+                        self.logger,
+                        p["logpipe"],
+                        ffmpeg_process=p["process"],
+                    )
+                    last_restart_time = now
 
             if self.detect_process_records_sub and self.config.record.stream_enabled(
                 STREAM_TYPE_SUB

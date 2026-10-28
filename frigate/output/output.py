@@ -8,17 +8,17 @@ import threading
 from multiprocessing.synchronize import Event as MpEvent
 from wsgiref.simple_server import make_server
 
+import cv2
 from ws4py.server.wsgirefserver import (
     WebSocketWSGIHandler,
     WebSocketWSGIRequestHandler,
     WSGIServer,
 )
-from ws4py.server.wsgiutils import WebSocketWSGIApplication
 
 from frigate.comms.config_updater import ConfigSubscriber
 from frigate.comms.detections_updater import DetectionSubscriber, DetectionTypeEnum
-from frigate.comms.ws import WebSocket
-from frigate.config import FrigateConfig
+from frigate.comms.ws import OriginCheckedWebSocketApplication, WebSocket
+from frigate.config import AuthConfig, FrigateConfig
 from frigate.config.camera.updater import (
     CameraConfigUpdateEnum,
     CameraConfigUpdateSubscriber,
@@ -122,6 +122,10 @@ class OutputProcess(FrigateProcess):
     def run(self) -> None:
         self.pre_run_setup(self.config.logger)
 
+        # birdseye resizes are small, and OpenCV's per-core thread pool burns
+        # ~3x the CPU of running them inline
+        cv2.setNumThreads(1)
+
         frame_manager = SharedMemoryFrameManager()
 
         # start a websocket server on 8082
@@ -131,7 +135,7 @@ class OutputProcess(FrigateProcess):
             8082,
             server_class=WSGIServer,
             handler_class=WebSocketWSGIRequestHandler,
-            app=WebSocketWSGIApplication(handler_cls=WebSocket),
+            app=OriginCheckedWebSocketApplication(handler_cls=WebSocket),
         )
         websocket_server.initialize_websockets_manager()
         websocket_thread = threading.Thread(target=websocket_server.serve_forever)
@@ -149,6 +153,7 @@ class OutputProcess(FrigateProcess):
             ],
         )
         birdseye_config_subscriber = ConfigSubscriber("config/birdseye", exact=True)
+        auth_config_subscriber = ConfigSubscriber("config/auth", exact=True)
 
         jsmpeg_cameras: dict[str, JsmpegCamera] = {}
         birdseye: Birdseye | None = None
@@ -188,6 +193,15 @@ class OutputProcess(FrigateProcess):
                 # already resolved against yaml by the config parse
                 self.config.birdseye = birdseye_config
                 logger.debug("Applied dynamic birdseye config update")
+
+            # user endpoints publish None on this topic and role edits an AuthConfig
+            while True:
+                auth_topic, auth_config = auth_config_subscriber.check_for_update()
+                if auth_topic is None:
+                    break
+                if isinstance(auth_config, AuthConfig):
+                    self.config.auth = auth_config
+                    logger.debug("Applied dynamic auth config update")
 
             # drain review updates every iteration, not just when birdseye is
             # being consumed, so a dropped end never strands a camera
@@ -271,11 +285,16 @@ class OutputProcess(FrigateProcess):
             )
             preview_write_times[camera] = frame_time
 
+            manager = websocket_server.manager
+            with manager.lock:
+                websockets = list(manager.websockets.values())
+
             # send camera frame to ffmpeg process if websockets are connected
             if any(
-                ws.environ["PATH_INFO"].endswith(camera)
+                not ws.terminated
+                and ws.environ["PATH_INFO"].endswith(camera)
                 and ws_has_camera_access(ws, camera, self.config)
-                for ws in websocket_server.manager
+                for ws in websockets
             ):
                 # write to the converter for the camera if clients are listening to the specific camera
                 jsmpeg_cameras[camera].write_frame(frame.tobytes())
@@ -287,9 +306,10 @@ class OutputProcess(FrigateProcess):
                 and (
                     self.config.birdseye.restream
                     or any(
-                        ws.environ["PATH_INFO"].endswith("birdseye")
+                        not ws.terminated
+                        and ws.environ["PATH_INFO"].endswith("birdseye")
                         and ws_has_camera_access(ws, "birdseye", self.config)
-                        for ws in websocket_server.manager
+                        for ws in websockets
                     )
                 )
             ):
@@ -325,6 +345,7 @@ class OutputProcess(FrigateProcess):
 
         config_subscriber.stop()
         birdseye_config_subscriber.stop()
+        auth_config_subscriber.stop()
         websocket_server.manager.close_all()
         websocket_server.manager.stop()
         websocket_server.manager.join()

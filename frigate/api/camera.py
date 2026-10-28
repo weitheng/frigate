@@ -34,7 +34,11 @@ from frigate.config.camera.updater import (
     CameraConfigUpdateTopic,
 )
 from frigate.models import User
-from frigate.util.builtin import clean_camera_user_pass, get_record_segment_time
+from frigate.util.builtin import (
+    clean_camera_user_pass,
+    clear_orphaned_comments,
+    get_record_segment_time,
+)
 from frigate.util.camera_cleanup import cleanup_camera_db, cleanup_camera_files
 from frigate.util.config import find_config_file
 from frigate.util.env import UnknownVariableError, substitute_frigate_vars
@@ -47,7 +51,7 @@ from frigate.util.live_streams import (
 from frigate.util.services import (
     analyze_record_keyframes,
     ffprobe_stream,
-    is_restricted_go2rtc_source,
+    is_restricted_go2rtc_api_source,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,9 +84,13 @@ def _is_valid_host(host: str) -> bool:
 
 @router.get("/go2rtc/streams", dependencies=[Depends(allow_any_authenticated())])
 async def go2rtc_streams(request: Request):
-    r = await asyncio.to_thread(requests.get, "http://127.0.0.1:1984/api/streams")
-    if not r.ok:
-        logger.error("Failed to fetch streams from go2rtc")
+    try:
+        r = await asyncio.to_thread(
+            requests.get, "http://127.0.0.1:1984/api/streams", timeout=10
+        )
+        r.raise_for_status()
+    except requests.RequestException as e:
+        logger.error("Failed to fetch streams from go2rtc: %s", e)
         return JSONResponse(
             content=({"success": False, "message": "Error fetching stream data"}),
             status_code=500,
@@ -117,16 +125,21 @@ async def go2rtc_streams(request: Request):
     dependencies=[Depends(require_go2rtc_stream_access)],
 )
 def go2rtc_camera_stream(request: Request, stream_name: str):
-    r = requests.get(
-        "http://127.0.0.1:1984/api/streams",
-        params={
-            "src": stream_name,
-            "video": "all",
-            "audio": "all",
-            "microphone": "",
-        },
-    )
-    if not r.ok:
+    try:
+        r = requests.get(
+            "http://127.0.0.1:1984/api/streams",
+            params={
+                "src": stream_name,
+                "video": "all",
+                "audio": "all",
+                "microphone": "",
+            },
+            # go2rtc probes each source in turn, so one unresponsive source
+            # can take 10s or more
+            timeout=(2, 35),
+        )
+        r.raise_for_status()
+    except requests.RequestException as e:
         camera_config = request.app.frigate_config.cameras.get(stream_name)
 
         if camera_config is None:
@@ -136,7 +149,7 @@ def go2rtc_camera_stream(request: Request, stream_name: str):
                     break
 
         if camera_config and camera_config.enabled:
-            logger.error("Failed to fetch streams from go2rtc")
+            logger.error("Failed to fetch streams from go2rtc: %s", e)
 
         return JSONResponse(
             content=({"success": False, "message": "Error fetching stream data"}),
@@ -153,9 +166,9 @@ def go2rtc_camera_stream(request: Request, stream_name: str):
 )
 def go2rtc_add_stream(request: Request, stream_name: str, src: str = ""):
     """Add or update a go2rtc stream configuration."""
-    if src and is_restricted_go2rtc_source(src):
+    if src and is_restricted_go2rtc_api_source(src):
         logger.warning(
-            "Rejected go2rtc stream '%s' with restricted source type (echo/expr/exec)",
+            "Rejected go2rtc stream '%s' with restricted source",
             stream_name,
         )
         return JSONResponse(
@@ -174,9 +187,9 @@ def go2rtc_add_stream(request: Request, stream_name: str, src: str = ""):
             except UnknownVariableError:
                 resolved_src = src
 
-            if is_restricted_go2rtc_source(resolved_src):
+            if is_restricted_go2rtc_api_source(resolved_src):
                 logger.warning(
-                    "Rejected go2rtc stream '%s' with restricted source type (echo/expr/exec)",
+                    "Rejected go2rtc stream '%s' with restricted source",
                     stream_name,
                 )
                 return JSONResponse(
@@ -1273,6 +1286,7 @@ async def delete_camera(
                 # Remove camera from config
                 if "cameras" in data and camera_name in data["cameras"]:
                     del data["cameras"][camera_name]
+                    clear_orphaned_comments(data["cameras"], data, "cameras")
 
                 # Remove camera from auth roles
                 auth = data.get("auth", {})

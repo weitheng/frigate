@@ -322,7 +322,11 @@ class Dispatcher:
             self.audio_activity.expire_all(payload)
 
         def handle_update_event_description() -> None:
-            event: Event = Event.get(Event.id == payload["id"])
+            event: Event | None = Event.get_or_none(Event.id == payload["id"])
+
+            if event is None:
+                return
+
             cast(dict, event.data)["description"] = payload["description"]
             event.save()
             self.publish(
@@ -486,7 +490,12 @@ class Dispatcher:
     def publish(self, topic: str, payload: Any, retain: bool = False) -> None:
         """Handle publishing to communicators."""
         for comm in self.comms:
-            comm.publish(topic, payload, retain)
+            try:
+                comm.publish(topic, payload, retain)
+            except Exception:
+                logger.exception(
+                    "Error publishing %s to %s", topic, type(comm).__name__
+                )
 
     def publish_local(self, topic: str, payload: Any) -> None:
         """Publish to every communicator except MQTT.
@@ -497,7 +506,12 @@ class Dispatcher:
             if isinstance(comm, MqttClient):
                 continue
 
-            comm.publish(topic, payload, False)
+            try:
+                comm.publish(topic, payload, False)
+            except Exception:
+                logger.exception(
+                    "Error publishing %s to %s", topic, type(comm).__name__
+                )
 
     def _publish_notices(self) -> None:
         if self.notice_registry is None:
